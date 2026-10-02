@@ -5,12 +5,13 @@
 | Milestone | State |
 | --- | --- |
 | M0 scaffold | done |
-| M1 ledger + Arbiter | built; **exit tests 1 and 7 are red until the Phase 0 fixture is added** |
+| M1 ledger + Arbiter | built; fixture added; **exit tests 1 and 7 have not run against it yet (no PostgreSQL available)** |
 
-M1 is not "done" by its own definition yet. `phase0-contracts/fixture/fixture_ledger.jsonl`
-and `fixture/replay.py` are not in the repo (the owner is adding them), so the two exit tests
-that run against them fail, and so does the CI step `python3 phase0-contracts/fixture/replay.py`.
-Everything else is green. See "Open" at the bottom.
+M1 is not "done" by its own definition yet. The Phase 0 fixture (`fixture_ledger.jsonl`,
+`replay.py`, `build_fixture.py`) is now in `phase0-contracts/fixture/`, checksums verified, and
+`replay.py` prints `REPLAY GREEN` on it. Exit tests 1 and 7 need a database, and none was
+reachable when the fixture landed, so they have not run against it. Exit tests 2 to 6 were
+green before the fixture landed and have not been re-run since. See "Fixture audit" and "Open".
 
 ## M0: scaffold
 
@@ -21,7 +22,8 @@ Everything else is green. See "Open" at the bottom.
 - pytest + ruff. `phase0-contracts/` is excluded from ruff because it is frozen.
 - GitHub Actions CI (`.github/workflows/ci.yml`) with a `postgres:16` service runs, in order:
   `python3 phase0-contracts/validate.py`, `python3 phase0-contracts/fixture/replay.py`,
-  `ruff check .`, `pytest`. The workflow has not run yet (the repo has no remote).
+  `ruff check .`, `pytest`. It has run once, before the fixture was added, and stopped at
+  the `replay.py` step; see "Open".
 - `CLAUDE.md` carries the architecture rules.
 
 ## M1: the ledger and the Arbiter
@@ -109,13 +111,13 @@ Tests create one throwaway schema per test inside the database that
 
 | # | Exit test | Test | Result |
 | --- | --- | --- | --- |
-| 1 | Fixture round-trip replays green | `test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green` | **red: fixture missing** |
+| 1 | Fixture round-trip replays green | `test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green` | **not run against the fixture: no database** |
 | 2 | Refusal suite | the nine tests under "Exit test 2" in `test_refusals.py` | green |
 | 3 | Idempotency | `test_arbiter.py::test_idempotent_resubmission_returns_the_original_event` | green |
 | 4 | Concurrency, 20 in parallel | `test_arbiter.py::test_parallel_submissions_get_dense_seq_and_a_valid_chain` | green |
 | 5 | Append-only trigger | `test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event` | green |
 | 6 | Atomicity | `test_arbiter.py::test_a_failure_before_commit_rolls_back_event_and_state` | green |
-| 7 | Rebuild after fixture ingest, zero diff | `test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff` | **red: fixture missing** |
+| 7 | Rebuild after fixture ingest, zero diff | `test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff` | **not run against the fixture: no database** |
 
 Tests 1 and 7 have stand-ins that run the same paths on a hand-written 24-event ledger
 covering all 19 event types (`tests/builders.py::sample_ledger`):
@@ -124,7 +126,9 @@ covering all 19 event types (`tests/builders.py::sample_ledger`):
 plumbing works; they do not show agreement with `replay.py`, which nobody has run against
 this code.
 
-Output, 2026-10-02, Windows 11, Python 3.11.15, PostgreSQL 16.10:
+Results 2 to 6 in the table are from the run below, which predates the fixture.
+
+Output, 2026-10-02, before the fixture was added, Windows 11, Python 3.11.15, PostgreSQL 16.10:
 
 ```
 $ pytest
@@ -165,14 +169,72 @@ RESULT: ALL GREEN
 Removing the per-project lock makes exit test 4 fail with a `(project_id, seq)` unique
 violation, so that test does depend on the lock.
 
+## Fixture audit (2026-10-02, after the fixture was added)
+
+Windows 11, Python 3.11.0. No PostgreSQL was reachable, so nothing below touches a database.
+
+```
+$ Get-FileHash phase0-contracts\fixture\* -Algorithm SHA256      (all three match the owner's checksums)
+e62ec17232863134b46a50dde6e03df64f0d3f67923d07c480d4f591f8edaf4b  fixture_ledger.jsonl   (40 lines, LF)
+dbe60b992f59eafbef772557243b2fcbc521e470963eaf812bab2727b9ef080a  replay.py
+ac312708dfcdc5cea26016fc259ee16da87c71a17639dd644c3e866d7a3234fc  build_fixture.py
+
+$ py phase0-contracts/validate.py
+META OK   phase0-contracts\agent_protocol.schema.json
+META OK   phase0-contracts\check_catalog.schema.json
+META OK   phase0-contracts\claim.schema.json
+META OK   phase0-contracts\ledger_events.schema.json
+META OK   phase0-contracts\system_model.schema.json
+KeyError: 'phase0-contracts/claim.schema.json'        (contracts-PROPOSALS.md P-1; exit 1)
+
+$ py phase0-contracts/validate.py   (via the POSIX glob shim, P-1)
+RESULT: ALL GREEN
+
+$ py phase0-contracts/fixture/replay.py
+ledger: fixture_ledger.jsonl — 40 events
+sources ingested:   4
+claims committed:   6  {'documented': 4, 'measured': 2}
+graph edges:        16  {'EVIDENCES': 5, 'SATISFIES': 5, 'DEPENDS_ON': 3, 'MITIGATES': 0, 'DECISION_EVIDENCE': 3}
+model versions:     4  head=mv_FIXV000003
+  components=5 interfaces=1 flows=3 state_machines=1 trust_boundaries=1
+objections:         raised=1 resolved=1 open=0
+decisions (ADR):    1   waivers: 1   checkpoints: 2
+recorded checks:    [('C-005', 'pass'), ('C-008', 'fail'), ('C-009', 'pass')]
+L0 C-001 on final state: PASS
+L0 C-002 on final state: PASS
+L0 C-008 on final state: PASS
+L0 C-009 on final state: PASS
+gate IMPLEMENTATION_READY: ALLOWED  (open criticals=0, open load-bearing assumptions=0)
+
+RESULT: REPLAY GREEN — Phase 0 exit test complete
+
+$ git add --renormalize .          (nothing staged: every tracked file is already LF)
+
+$ pytest
+8 passed, 93 errors in 268.09s (0:04:28)      (every error is psycopg ConnectionTimeout: no database)
+
+$ pytest tests/test_contracts.py tests/test_architecture.py
+7 passed in 0.49s
+
+$ ruff check .
+All checks passed!
+```
+
+An offline run, not an exit test: the fixture was put through the Arbiter's schema gate, `ts`
+check and `rules.py` with an in-memory object standing in for the `arb_*` tables, stamped with
+`seq` and `prev_hash` as `arbiter.py` does, and written the way `architect dump` writes. All 40
+events were accepted, a fold-only rebuild gave the same state, and `replay.py` printed
+`REPLAY GREEN` on that dump. So the rules, the `project_id` rewrite and the added `prev_hash`
+agree with `replay.py` on this ledger. The SQL, the transaction and the jsonb round trip were
+not exercised.
+
 ## Open
 
-1. **Add the fixture.** Drop `fixture_ledger.jsonl` and `replay.py` into
-   `phase0-contracts/fixture/` and commit them. Then run `pytest tests/test_exit_fixture.py`.
-   Where the Arbiter and `replay.py` disagree, `replay.py` wins and the rule in `rules.py`
-   changes. The likeliest places: `model.version_created` with a `parent`
-   (contracts-PROPOSALS.md P-4), proposal namespaces (P-5), the `project_id` rewrite on
-   ingest, and whether `replay.py` accepts the `prev_hash` the Arbiter adds.
-2. **CI has never run.** It needs a GitHub remote, and it stays red until item 1.
-3. **`docs/`** holds the architecture spec (`.docx`). It is untracked; commit it or ignore it.
-4. **contracts-PROPOSALS.md** has five entries for the next contract version.
+1. **Run the suite against PostgreSQL with the fixture present.** `pytest` needs a PostgreSQL
+   16 at `ARCHITECT_DATABASE_URL`. Exit tests 1 and 7 have never run against the fixture, and
+   2 to 6 have not been re-run since it landed. Where the Arbiter and `replay.py` disagree,
+   `replay.py` wins and the rule in `rules.py` changes.
+2. **CI has run once and failed**, on the commit before the fixture: `validate.py` passed on
+   Linux, `replay.py` failed (fixture missing), and `ruff` and `pytest` were skipped. Pushing
+   the fixture commit runs the whole suite on CI's `postgres:16`.
+3. **contracts-PROPOSALS.md** has five entries for the next contract version.
