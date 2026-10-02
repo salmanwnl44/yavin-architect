@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yavin.dev/contracts/v0/agent_protocol.schema.json",
+  "$id": "https://yavin.dev/contracts/v1/agent_protocol.schema.json",
   "title": "AgentMessage",
   "description": "Every message between the Harness and its stateless agent workers (spec §12). Agents are proposers: nothing here writes state — the Arbiter turns accepted proposals into ledger events. Free text lives only in designated narrative fields.",
   "type": "object",

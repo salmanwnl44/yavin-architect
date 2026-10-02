@@ -6,12 +6,14 @@ says what has landed and how to run it.
 
 ## Ground truth
 
-`phase0-contracts/` is **FROZEN**. Never edit, reformat, lint-fix or add to anything in it.
+`phase0-contracts/` is **FROZEN at v1.0** (`phase0-contracts/CHANGELOG.md` lists what changed
+from the v0.1 draft). Never edit, reformat, lint-fix or add to anything in it.
 Read it before coding, in this order: `README.md`, the five `*.schema.json` files,
 `fixture/fixture_ledger.jsonl`, `fixture/replay.py`.
 
-`fixture/replay.py` is the reference semantics: the Arbiter must accept exactly the ledgers
-`replay.py` accepts and refuse what it refuses.
+`fixture/replay.py` is the reference semantics: the Arbiter must refuse every ledger
+`replay.py` refuses, and accept what it accepts except where the contracts README lists a
+rule as Arbiter-enforced (model version parents, proposal id uniqueness).
 
 If a contract blocks you, log the friction in `contracts-PROPOSALS.md` and work around it.
 Do not change the contracts.

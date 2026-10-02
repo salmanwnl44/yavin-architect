@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Phase 0 exit test, step 1-2: meta-validate all schemas, smoke-test sample instances."""
 import json, glob, sys
-from jsonschema import Draft202012Validator
+from pathlib import Path
+from jsonschema import Draft202012Validator, FormatChecker
 
 ok = True
+
+# `format` is an assertion in these contracts, not an annotation (v1.0, P-2). date-time is
+# only checked when rfc3339-validator is installed, so its absence is a failure, not a pass.
+FORMAT = FormatChecker()
+if "date-time" not in FORMAT.checkers:
+    ok = False
+    print("FORMAT FAIL date-time is not enforced: install rfc3339-validator")
 
 def load(p):
     with open(p) as f:
@@ -12,6 +20,7 @@ def load(p):
 # 1. Meta-validation: every schema is itself valid JSON Schema 2020-12
 schemas = {}
 for path in sorted(glob.glob("phase0-contracts/*.schema.json")):
+    path = Path(path).as_posix()  # same key on Windows and POSIX (v1.0, P-1)
     s = load(path)
     try:
         Draft202012Validator.check_schema(s)
@@ -23,7 +32,7 @@ for path in sorted(glob.glob("phase0-contracts/*.schema.json")):
 
 def smoke(name, schema_path, instance, expect_valid=True):
     global ok
-    v = Draft202012Validator(schemas[schema_path])
+    v = Draft202012Validator(schemas[schema_path], format_checker=FORMAT)
     errs = sorted(v.iter_errors(instance), key=lambda e: e.path)
     valid = not errs
     status = "OK" if valid == expect_valid else "FAIL"
@@ -79,6 +88,9 @@ smoke("event: waiver.signed", "phase0-contracts/ledger_events.schema.json", evt_
 evt_bad = dict(evt_good)
 evt_bad["payload"] = {"waiver_id": "wvr_01HXAMPLE0EE"}
 smoke("event: waiver w/o signer rejected", "phase0-contracts/ledger_events.schema.json", evt_bad, False)
+evt_bad_ts = dict(evt_good)
+evt_bad_ts["ts"] = "2026-10-02 06:41"
+smoke("event: ts that is not RFC 3339 rejected", "phase0-contracts/ledger_events.schema.json", evt_bad_ts, False)
 
 # 2e. An agent Objection — falsifiable_test required
 obj_good = {

@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yavin.dev/contracts/v0/ledger_events.schema.json",
+  "$id": "https://yavin.dev/contracts/v1/ledger_events.schema.json",
   "title": "LedgerEvent",
-  "description": "One event in a project's append-only ledger (spec §5-P2, §6). Every state change in the platform is exactly one of these, committed by the Arbiter. Payload object shapes are governed per type; objects marked 'see claim.schema.json' etc. are enforced by convention in v0.1.",
+  "description": "One event in a project's append-only ledger (spec §5-P2, §6). Every state change in the platform is exactly one of these, committed by the Arbiter. Payload object shapes are governed per type; objects marked 'see claim.schema.json' etc. are enforced by convention in v1.0. `format` keywords are assertions.",
   "type": "object",
   "additionalProperties": false,
   "required": ["event_id", "project_id", "seq", "ts", "actor", "type", "payload", "idempotency_key"],
@@ -26,7 +26,7 @@
     "type": { "$ref": "#/$defs/EventType" },
     "payload": { "type": "object" },
     "idempotency_key": { "type": "string", "minLength": 8 },
-    "prev_hash": { "type": "string", "description": "Hash of the previous committed event; optional hash-chain for tamper evidence." }
+    "prev_hash": { "type": "string", "description": "Hash chain for tamper evidence, stamped by the Arbiter. Lowercase hex SHA-256 of the previous committed event in the same project (the one with seq - 1), computed over that event's canonical JSON: the whole event object as committed, its own prev_hash included, with keys sorted, separators ',' and ':', non-ASCII characters not escaped, encoded as UTF-8. The first event of a project (seq 0) has no predecessor and omits the field." }
   },
   "oneOf": [
     { "properties": { "type": { "const": "source.ingested" }, "payload": { "$ref": "#/$defs/SourceIngested" } } },
@@ -79,7 +79,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["proposal_id", "claim"],
       "properties": {
-        "proposal_id": { "type": "string" },
+        "proposal_id": { "type": "string", "description": "Unique within the project across claim proposals and model patch proposals, which share one namespace. Arbiter-enforced." },
         "claim": { "type": "object", "description": "Conforms to claim.schema.json." },
         "proposer_msg_id": { "type": "string" }
       }
@@ -90,7 +90,7 @@
       "properties": {
         "claim_id": { "type": "string", "pattern": "^clm_[0-9A-Za-z]{10,26}$" },
         "claim": { "type": "object", "description": "Conforms to claim.schema.json." },
-        "from_proposal": { "type": "string" }
+        "from_proposal": { "type": "string", "description": "The proposal_id of a committed claim.proposed event in the same project. Arbiter-enforced." }
       }
     },
     "ClaimStatusChanged": {
@@ -126,7 +126,7 @@
       "type": "object", "additionalProperties": false,
       "required": ["proposal_id", "base_version", "patch"],
       "properties": {
-        "proposal_id": { "type": "string" },
+        "proposal_id": { "type": "string", "description": "Unique within the project across claim proposals and model patch proposals, which share one namespace. Arbiter-enforced." },
         "base_version": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
         "patch": { "type": "object", "description": "ModelPatch ops per agent_protocol.schema.json." },
         "proposer_msg_id": { "type": "string" }
@@ -139,13 +139,17 @@
         "version_id": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
         "base_version": { "type": "string" },
         "patch": { "type": "object" },
-        "from_proposal": { "type": "string" }
+        "from_proposal": { "type": "string", "description": "The proposal_id of a committed model.patch_proposed event in the same project. Arbiter-enforced." }
       }
     },
     "ModelVersionCreated": {
       "type": "object", "additionalProperties": false,
       "required": ["version_id"],
-      "properties": { "version_id": { "type": "string" }, "parent": { "type": "string" } }
+      "description": "Creates a model version and makes it the project's head. Without `parent` it is the genesis version, allowed only while the project has no head. With `parent` it must name a model version already committed in the same project. Both rules are Arbiter-enforced. A project has one head in v1.0; multiple heads for alternative designs are deferred to v1.1.",
+      "properties": {
+        "version_id": { "type": "string" },
+        "parent": { "type": "string", "description": "A model version already committed in the same project (by model.version_created or model.patch_committed)." }
+      }
     },
     "DecisionRecorded": {
       "type": "object", "additionalProperties": false,

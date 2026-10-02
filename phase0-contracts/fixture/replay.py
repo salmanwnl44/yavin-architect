@@ -20,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 
 HERE = Path(__file__).resolve().parent            # .../phase0-contracts/fixture
 CONTRACTS = HERE.parent                            # .../phase0-contracts
@@ -35,20 +35,28 @@ model_s = load_schema("system_model.schema.json")
 proto_s = load_schema("agent_protocol.schema.json")
 catalog_s = load_schema("check_catalog.schema.json")
 
+# `format` is an assertion in these contracts, not an annotation (v1.0, P-2).
+FORMAT = FormatChecker()
+
 def subdef(schema, name):
     """Standalone validator for one $def (carries the parent's $defs for internal refs)."""
     sub = dict(schema["$defs"][name])
     sub["$defs"] = schema["$defs"]
-    return Draft202012Validator(sub)
+    return Draft202012Validator(sub, format_checker=FORMAT)
 
-V_EVENT = Draft202012Validator(ledger_s)
-V_CLAIM = Draft202012Validator(claim_s)
-V_MODEL = Draft202012Validator(model_s)
+V_EVENT = Draft202012Validator(ledger_s, format_checker=FORMAT)
+V_CLAIM = Draft202012Validator(claim_s, format_checker=FORMAT)
+V_MODEL = Draft202012Validator(model_s, format_checker=FORMAT)
 V_PATCH = subdef(proto_s, "ModelPatchProposal")
 V_OBJECTION = subdef(proto_s, "Objection")
 V_CHECK = subdef(catalog_s, "Check")
 
 failures = []
+
+# date-time is only checked when rfc3339-validator is installed; without it every `ts`
+# would pass, so its absence is a replay failure.
+if "date-time" not in FORMAT.checkers:
+    failures.append("date-time format is not enforced: install rfc3339-validator")
 
 def require(cond, msg):
     if not cond:

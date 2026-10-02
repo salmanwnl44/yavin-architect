@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yavin.dev/contracts/v0/system_model.schema.json",
+  "$id": "https://yavin.dev/contracts/v1/system_model.schema.json",
   "title": "SystemModelVersion",
   "description": "One immutable version of the typed System Model the IDE canvas edits (spec §11). Diagrams are projections of this; patches between versions travel as model.patch_* ledger events. Requirement ids (req_*) refer to Requirement claims in the ledger. Traceability (orphans, waivers) is enforced by checks C-001/C-002, not by schema.",
   "type": "object",

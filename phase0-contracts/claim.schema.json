@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yavin.dev/contracts/v0/claim.schema.json",
+  "$id": "https://yavin.dev/contracts/v1/claim.schema.json",
   "title": "Claim",
   "description": "The atomic unit of knowledge (spec §7). Nothing is storable without typed structure, provenance, and taint; conditional requirements below enforce the no-silent-promotion rules at the schema level.",
   "type": "object",
@@ -26,7 +26,7 @@
     },
     "conditions": {
       "type": "object",
-      "description": "§5-P9: the conditions under which the claim holds (gpu, batch, dataset, workload...). Keys free-form in v0.1.",
+      "description": "§5-P9: the conditions under which the claim holds (gpu, batch, dataset, workload...). Keys free-form in v1.0.",
       "additionalProperties": { "type": ["string", "number", "boolean"] }
     },
     "status": { "$ref": "#/$defs/EpistemicStatus" },

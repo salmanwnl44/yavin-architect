@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://yavin.dev/contracts/v0/check_catalog.schema.json",
+  "$id": "https://yavin.dev/contracts/v1/check_catalog.schema.json",
   "title": "CheckCatalog",
   "description": "The verification check catalog as versioned data (spec §14). Checks are code with ids; the catalog carries their metadata, parameters, and changelogs. Good L4 objections graduate into new entries here.",
   "type": "object",
