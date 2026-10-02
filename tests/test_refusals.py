@@ -70,6 +70,15 @@ def raised(body: dict[str, Any], name: str = "splitbrain") -> dict[str, Any]:
     )
 
 
+def proposed_claim(proposal_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    return candidate("claim.proposed", {"proposal_id": proposal_id, "claim": body}, actor=AGENT)
+
+
+def proposed_patch(proposal_id: str, base: str) -> dict[str, Any]:
+    payload = {"proposal_id": proposal_id, "base_version": base, "patch": patch(base)}
+    return candidate("model.patch_proposed", payload, actor=AGENT)
+
+
 def waiver(actor: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "waiver_id": ident("wvr", "singlenode"),
@@ -199,6 +208,31 @@ def test_a_patch_proposal_is_not_a_claim_proposal(commit, refuse):
     refuse(claim_committed(claim(), from_proposal="prop-1"), 422, "UNKNOWN_PROPOSAL")
 
 
+def test_claim_and_patch_proposals_with_distinct_ids_are_accepted(commit):
+    commit(source())
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    commit(proposed_claim("prop-1", claim()))
+    commit(proposed_patch("prop-2", MV1))
+    commit(claim_committed(claim(), from_proposal="prop-1"))
+    commit(patch_committed(MV2, MV1, from_proposal="prop-2"))
+
+
+def test_a_proposal_id_is_used_once_across_both_kinds(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    commit(proposed_claim("prop-1", claim()))
+    for reuse in (proposed_patch("prop-1", MV1), proposed_claim("prop-1", claim("other"))):
+        body = refuse(reuse, 409, "DUPLICATE_PROPOSAL", "$.payload.proposal_id")
+        assert "claim proposal" in body["detail"]
+
+
+def test_formats_inside_embedded_objects_are_enforced(commit, refuse):
+    commit(source())
+    not_a_timestamp = claim(recorded_at="yesterday")
+    refuse(
+        claim_committed(not_a_timestamp), 422, "SCHEMA_INVALID", "$.payload.claim.recorded_at"
+    )
+
+
 def test_status_change_of_an_unknown_claim(commit, refuse):
     cause = commit(source())
     refuse(
@@ -250,6 +284,27 @@ def test_retracting_an_unknown_claim(refuse):
 def test_second_genesis_version(commit, refuse):
     commit(candidate("model.version_created", {"version_id": MV1}))
     refuse(candidate("model.version_created", {"version_id": MV2}), 409, "DUPLICATE_GENESIS")
+
+
+def test_version_created_with_a_committed_parent_is_accepted(client, commit):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    commit(patch_committed(MV2, MV1))
+    commit(candidate("model.version_created", {"version_id": MV3, "parent": MV2}))
+    assert client.get(f"/v1/projects/{PROJECT}/head").json()["model_head_version"] == MV3
+
+
+def test_version_created_with_an_unknown_parent(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    orphan = candidate("model.version_created", {"version_id": MV2, "parent": MV3})
+    refuse(orphan, 422, "UNKNOWN_MODEL_VERSION", "$.payload.parent")
+
+
+def test_a_parent_version_from_another_project_is_unknown(client, refuse):
+    assert client.post("/v1/projects", json={"project_id": "p2"}).status_code == 201
+    elsewhere = candidate("model.version_created", {"version_id": MV1})
+    assert client.post("/v1/projects/p2/events", json=elsewhere).status_code == 201
+    child = candidate("model.version_created", {"version_id": MV2, "parent": MV1})
+    refuse(child, 422, "UNKNOWN_MODEL_VERSION", "$.payload.parent")
 
 
 def test_patch_must_be_a_valid_model_patch(commit, refuse):

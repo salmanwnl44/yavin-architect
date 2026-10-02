@@ -69,9 +69,22 @@ def _apply_source_ingested(event: Event, state: ArbiterState) -> None:
     state.add_source(event["payload"]["source_id"])
 
 
+def _require_new_proposal(event: Event, state: ArbiterState) -> None:
+    """Claim and model patch proposals share one id namespace per project (contracts v1.0)."""
+    proposal_id = event["payload"]["proposal_id"]
+    kind = state.proposal_kind(proposal_id)
+    if kind is not None:
+        raise Rejection(
+            "DUPLICATE_PROPOSAL",
+            f"proposal {proposal_id} is already used by a {kind.replace('_', ' ')} proposal",
+            "$.payload.proposal_id",
+        )
+
+
 # claim.proposed
 def _check_claim_proposed(event: Event, state: ArbiterState) -> None:
     _validate_claim(event["payload"]["claim"])
+    _require_new_proposal(event, state)
 
 
 def _apply_claim_proposed(event: Event, state: ArbiterState) -> None:
@@ -101,7 +114,7 @@ def _check_claim_committed(event: Event, state: ArbiterState) -> None:
                 f"$.payload.claim.evidence[{i}].source",
             )
     proposal = payload.get("from_proposal")
-    if proposal is not None and not state.proposal_exists(proposal, "claim"):
+    if proposal is not None and state.proposal_kind(proposal) != "claim":
         raise Rejection(
             "UNKNOWN_PROPOSAL", f"no claim proposal {proposal}", "$.payload.from_proposal"
         )
@@ -152,17 +165,25 @@ def _apply_claim_retracted(event: Event, state: ArbiterState) -> None:
 
 # model.version_created
 def _check_model_version_created(event: Event, state: ArbiterState) -> None:
-    head = state.model_head()
-    if "parent" not in event["payload"] and head is not None:
+    parent = event["payload"].get("parent")
+    if parent is None:
+        head = state.model_head()
+        if head is not None:
+            raise Rejection(
+                "DUPLICATE_GENESIS",
+                f"a genesis version needs an empty model; the head is already {head}",
+                "$.payload",
+            )
+    elif not state.model_version_exists(parent):
         raise Rejection(
-            "DUPLICATE_GENESIS",
-            f"a genesis version needs an empty model; the head is already {head}",
-            "$.payload",
+            "UNKNOWN_MODEL_VERSION",
+            f"parent {parent} is not a committed model version in this project",
+            "$.payload.parent",
         )
 
 
 def _apply_model_version_created(event: Event, state: ArbiterState) -> None:
-    state.set_model_head(event["payload"]["version_id"])
+    state.add_model_version(event["payload"]["version_id"])
 
 
 # model.patch_proposed / model.patch_committed
@@ -190,10 +211,15 @@ def _check_patch(event: Event, state: ArbiterState) -> None:
         )
 
 
+def _check_model_patch_proposed(event: Event, state: ArbiterState) -> None:
+    _check_patch(event, state)
+    _require_new_proposal(event, state)
+
+
 def _check_model_patch_committed(event: Event, state: ArbiterState) -> None:
     _check_patch(event, state)
     proposal = event["payload"].get("from_proposal")
-    if proposal is not None and not state.proposal_exists(proposal, "model_patch"):
+    if proposal is not None and state.proposal_kind(proposal) != "model_patch":
         raise Rejection(
             "UNKNOWN_PROPOSAL", f"no model patch proposal {proposal}", "$.payload.from_proposal"
         )
@@ -204,7 +230,7 @@ def _apply_model_patch_proposed(event: Event, state: ArbiterState) -> None:
 
 
 def _apply_model_patch_committed(event: Event, state: ArbiterState) -> None:
-    state.set_model_head(event["payload"]["version_id"])
+    state.add_model_version(event["payload"]["version_id"])
 
 
 # objection.raised
@@ -288,7 +314,7 @@ RULES: dict[str, Rule] = {
     "claim.retracted": Rule(_check_claim_retracted, _apply_claim_retracted),
     "entity.merged": _SCHEMA_ONLY,
     "entity.merge_reverted": Rule(_check_merge_reverted, _nothing),
-    "model.patch_proposed": Rule(_check_patch, _apply_model_patch_proposed),
+    "model.patch_proposed": Rule(_check_model_patch_proposed, _apply_model_patch_proposed),
     "model.patch_committed": Rule(_check_model_patch_committed, _apply_model_patch_committed),
     "model.version_created": Rule(_check_model_version_created, _apply_model_version_created),
     "decision.recorded": Rule(_check_decision_recorded, _nothing),

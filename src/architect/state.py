@@ -12,7 +12,14 @@ from typing import Any
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
-STATE_TABLES = ("arb_sources", "arb_claims", "arb_proposals", "arb_model_heads", "arb_objections")
+STATE_TABLES = (
+    "arb_sources",
+    "arb_claims",
+    "arb_proposals",
+    "arb_model_heads",
+    "arb_model_versions",
+    "arb_objections",
+)
 
 
 class ArbiterState:
@@ -35,13 +42,13 @@ class ArbiterState:
             (self._pid, source_id),
         )
 
-    # proposals
-    def proposal_exists(self, proposal_id: str, kind: str) -> bool:
-        return self._exists(
-            "SELECT 1 FROM arb_proposals WHERE project_id = %s AND proposal_id = %s AND kind = %s",
-            proposal_id,
-            kind,
-        )
+    # proposals: one id namespace per project, shared by both kinds
+    def proposal_kind(self, proposal_id: str) -> str | None:
+        row = self._cur.execute(
+            "SELECT kind FROM arb_proposals WHERE project_id = %s AND proposal_id = %s",
+            (self._pid, proposal_id),
+        ).fetchone()
+        return row["kind"] if row else None
 
     def add_proposal(self, proposal_id: str, kind: str) -> None:
         self._cur.execute(
@@ -78,7 +85,19 @@ class ArbiterState:
         ).fetchone()
         return row["head_version"] if row else None
 
-    def set_model_head(self, version_id: str) -> None:
+    def model_version_exists(self, version_id: str) -> bool:
+        return self._exists(
+            "SELECT 1 FROM arb_model_versions WHERE project_id = %s AND version_id = %s",
+            version_id,
+        )
+
+    def add_model_version(self, version_id: str) -> None:
+        """Record a committed model version and make it the project's head."""
+        self._cur.execute(
+            "INSERT INTO arb_model_versions (project_id, version_id) VALUES (%s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (self._pid, version_id),
+        )
         self._cur.execute(
             "INSERT INTO arb_model_heads (project_id, head_version) VALUES (%s, %s) "
             "ON CONFLICT (project_id) DO UPDATE SET head_version = EXCLUDED.head_version",

@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, FormatChecker
 from jsonschema.exceptions import ValidationError, best_match
 from referencing import Registry, Resource
 
@@ -105,12 +105,17 @@ def load_contracts() -> Contracts:
     registry = Registry().with_resources(
         (schema["$id"], Resource.from_contents(schema)) for schema in schemas.values()
     )
+    # Contracts v1.0: `format` is an assertion. date-time is only checked when
+    # rfc3339-validator is importable, so refuse to run without it.
+    formats = FormatChecker()
+    if "date-time" not in formats.checkers:
+        raise RuntimeError("date-time is not enforced: rfc3339-validator is not installed")
 
     def validator(name: str, pointer: str | None = None) -> Draft202012Validator:
         schema = schemas[name]
         if pointer is not None:
             schema = {"$ref": f"{schema['$id']}#{pointer}"}
-        return Draft202012Validator(schema, registry=registry)
+        return Draft202012Validator(schema, registry=registry, format_checker=formats)
 
     ledger = schemas["ledger_events.schema.json"]
     return Contracts(

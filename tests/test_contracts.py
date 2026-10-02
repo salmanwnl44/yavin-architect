@@ -39,6 +39,28 @@ def test_event_error_reports_the_branch_for_the_events_own_type():
     assert contracts.event_error(event) is None
 
 
+def test_formats_are_assertions():
+    contracts = load_contracts()
+    event = {
+        "event_id": "evt_0000000001",
+        "project_id": "p",
+        "seq": 0,
+        "ts": "2026-10-02 06:41",
+        "actor": {"kind": "human", "id": "saumya"},
+        "type": "session.phase_changed",
+        "payload": {"session_id": "ses_0000000001", "to": "frame"},
+        "idempotency_key": "phase-0001",
+    }
+    error = contracts.event_error(event)
+    assert error is not None and json_path(error.path) == "$.ts"
+
+    event["ts"] = "2026-10-02T06:41:00+05:30"
+    assert contracts.event_error(event) is None
+
+    claim = {"valid_from": "next tuesday"}
+    assert any(e.path[-1] == "valid_from" for e in contracts.claim.iter_errors(claim) if e.path)
+
+
 def test_embedded_validators_resolve_their_defs():
     contracts = load_contracts()
     objection = {

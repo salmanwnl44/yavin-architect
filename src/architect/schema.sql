@@ -59,16 +59,24 @@ CREATE TABLE IF NOT EXISTS arb_claims (
     PRIMARY KEY (project_id, claim_id)
 );
 
+-- Claim proposals and model patch proposals share one id namespace per project.
 CREATE TABLE IF NOT EXISTS arb_proposals (
     project_id  text NOT NULL REFERENCES projects (project_id),
     proposal_id text NOT NULL,
     kind        text NOT NULL CHECK (kind IN ('claim', 'model_patch')),
-    PRIMARY KEY (project_id, proposal_id, kind)
+    PRIMARY KEY (project_id, proposal_id)
 );
 
 CREATE TABLE IF NOT EXISTS arb_model_heads (
     project_id   text PRIMARY KEY REFERENCES projects (project_id),
     head_version text NOT NULL
+);
+
+-- Every model version committed so far, by model.version_created or model.patch_committed.
+CREATE TABLE IF NOT EXISTS arb_model_versions (
+    project_id text NOT NULL REFERENCES projects (project_id),
+    version_id text NOT NULL,
+    PRIMARY KEY (project_id, version_id)
 );
 
 CREATE TABLE IF NOT EXISTS arb_objections (
