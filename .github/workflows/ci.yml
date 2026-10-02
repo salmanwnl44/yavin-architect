@@ -35,4 +35,4 @@ jobs:
       - name: Phase 0 fixture replays
         run: python3 phase0-contracts/fixture/replay.py
       - run: ruff check .
-      - run: pytest
+      - run: pytest -v
