@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.27",
+    "httpx2",
     "pytest>=8",
     "ruff>=0.6",
 ]
@@ -42,3 +42,6 @@ extend-exclude = ["phase0-contracts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["architect", "builders", "conftest"]
