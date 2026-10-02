@@ -66,3 +66,18 @@ Tests create a throwaway schema per test inside the database named by
   table in `PROGRESS.md`, and a refusal test for every new rejection code.
 - Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
   workflows, projections beyond `arb_*`, UI, auth, multi-tenancy.
+
+### Module report (mandatory)
+Every session ends with exactly this block and nothing after it:
+1. Module name and one-line result (DONE / BLOCKED / PARTIAL).
+2. Exit-test table: test | green/red | evidence (test name or command output).
+3. CI run id and result for the final pushed commit.
+4. Files changed — short summary by area.
+5. Deviations from the prompt, each with the reason.
+6. New entries added to contracts-PROPOSALS.md (or 'none').
+7. Open questions for the owner (or 'none').
+
+### Test integrity
+Exit tests are the answer key and are written before or alongside the code. Never weaken,
+skip or rewrite a test to make it pass. If a test seems wrong, stop and report it as an open
+question.
