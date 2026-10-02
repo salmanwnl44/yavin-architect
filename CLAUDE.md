@@ -60,7 +60,7 @@ Tests create a throwaway schema per test inside the database named by
 ## Working agreements
 
 - Small commits per logical step. Update `PROGRESS.md` when a milestone step lands.
-- Adding an event type or a rule means: a `Rule` in `rules.py`, a row in the matrix in
-  `PROGRESS.md`, and a refusal test for every new rejection code.
+- Adding an event type or a rule means: a `Rule` in `rules.py`, any new code in the rejection
+  table in `PROGRESS.md`, and a refusal test for every new rejection code.
 - Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
   workflows, projections beyond `arb_*`, UI, auth, multi-tenancy.
