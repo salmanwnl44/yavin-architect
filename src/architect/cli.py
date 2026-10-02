@@ -11,10 +11,12 @@ from pathlib import Path
 
 from psycopg_pool import ConnectionPool
 
-from architect import ledger
+from architect import ledger, projector
 from architect.arbiter import ARBITER_STAMPED, Arbiter
 from architect.db import database_url, ensure_schema, open_pool
 from architect.errors import Rejection
+from architect.projections import ProjectionError
+from architect.projector import DEFAULT_BATCH, DEFAULT_POLL_SECONDS, Projector
 from architect.rebuild import rebuild_state
 
 
@@ -95,6 +97,36 @@ def _rebuild_state(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _project(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """The projector worker: fold committed events into the proj_* read models."""
+    worker = Projector(pool, batch_size=args.batch_size)
+    try:
+        if args.once:
+            print(f"projected {worker.catch_up()} events")
+        else:
+            print(f"projecting; polling every {args.poll_seconds:g}s between notifications")
+            worker.run(poll_seconds=args.poll_seconds)
+    except ProjectionError as error:
+        print(f"projection stopped: {error}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _rebuild_projections(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    try:
+        folded = Projector(pool, batch_size=args.batch_size).rebuild(args.project)
+    except ProjectionError as error:
+        print(f"projection stopped: {error}", file=sys.stderr)
+        return 1
+    print(f"rebuilt proj_* read models for {args.project} from {folded} events")
+    print(f"content hash: {projector.content_hash(pool, args.project)}")
+    return 0
+
+
 def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     if not _project_known(pool, args.project):
         return 1
@@ -145,6 +177,24 @@ def _parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="recompute the prev_hash chain and report breaks")
     verify.add_argument("--project", required=True)
     verify.set_defaults(run=_verify)
+
+    project = sub.add_parser("project", help="run the projector that maintains the read models")
+    project.add_argument("--once", action="store_true", help="catch up and exit")
+    project.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=DEFAULT_POLL_SECONDS,
+        help="longest wait between passes when no notification arrives",
+    )
+    project.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
+    project.set_defaults(run=_project)
+
+    rebuild_projections = sub.add_parser(
+        "rebuild-projections", help="drop and rebuild proj_* from the ledger, print their hash"
+    )
+    rebuild_projections.add_argument("--project", required=True)
+    rebuild_projections.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
+    rebuild_projections.set_defaults(run=_rebuild_projections)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

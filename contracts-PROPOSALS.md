@@ -80,3 +80,17 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 - **Workaround.** None needed today: the current files decode, and CI runs on Linux. The
   Arbiter reads every contract file and ledger as UTF-8.
 - **Proposal.** Pass `encoding="utf-8"` wherever the two scripts open a file.
+
+## P-7: `replay.py` empties the model on every `model.version_created`
+
+**Status: open, for the next contract version.**
+
+- **Problem.** v1.0 lets `model.version_created` carry a `parent` (P-4), but `replay.py` folds
+  every `model.version_created` to an empty model, parent or not. The contracts do not say
+  what a version created from a parent contains. The fixture only has a genesis, so its
+  replay is unaffected.
+- **Workaround.** The read models (`architect.projections`) materialize a version created
+  from a parent as a copy of the parent's model, under the new `version_id`. That differs
+  from `replay.py` on any ledger that uses `parent`.
+- **Proposal.** State in the contracts that a version created from a parent starts as the
+  parent's model, and have `replay.py` fold it that way.

@@ -3,7 +3,16 @@
 from __future__ import annotations
 
 CONFLICT_CODES = frozenset({"BASE_MOVED"})
-NOT_FOUND_CODES = frozenset({"UNKNOWN_PROJECT", "UNKNOWN_EVENT"})
+NOT_FOUND_CODES = frozenset(
+    {
+        "UNKNOWN_PROJECT",
+        "UNKNOWN_EVENT",
+        # read models: the thing is not in the projections (yet, or at all)
+        "MODEL_VERSION_NOT_FOUND",
+        "CLAIM_NOT_FOUND",
+        "ELEMENT_NOT_FOUND",
+    }
+)
 
 
 class Rejection(Exception):

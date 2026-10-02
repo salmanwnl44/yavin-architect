@@ -17,6 +17,10 @@ EVENT_COLUMNS = (
     "idempotency_key, prev_hash"
 )
 
+# NOTIFY channel the Arbiter signals on each commit, with the project_id as payload. A wake-up
+# for the projector only: it carries no data a reader may rely on.
+EVENTS_CHANNEL = "architect_events"
+
 _SCHEMA_LOCK = 0x41524348  # "ARCH": serializes concurrent ensure_schema() calls
 
 

@@ -36,6 +36,11 @@ Do not change the contracts.
 5. **Every rejection is typed and tested.** A rejection is `{code, detail, json_path?}` with
    HTTP 422 (schema or rule) or 409 (`BASE_MOVED`, `DUPLICATE_*`). Each code has a test
    proving the event is refused and that nothing was written.
+6. **Read models are projections too.** The `proj_*` tables are written only by the projector
+   (`architect.projector`), each batch in the same transaction as its `proj_cursors` row, and
+   are rebuildable from the ledger alone (`architect rebuild-projections`). The projector
+   never writes an event and never calls the Arbiter. The fold is deterministic: no
+   wall-clock values and no generated ids. The GET endpoints over them read `proj_*` only.
 
 ## Layout
 
@@ -44,6 +49,10 @@ Do not change the contracts.
 - `src/architect/state.py`: the `arb_*` projection tables.
 - `src/architect/ledger.py`: read side (pages, head, dump, hash-chain verification).
 - `src/architect/rebuild.py`: rebuild `arb_*` from the ledger and diff.
+- `src/architect/projections.py`: the `proj_*` fold, one handler per projected event type.
+- `src/architect/projector.py`: the projector worker (cursor, batches, LISTEN/NOTIFY, rebuild,
+  content hash).
+- `src/architect/readmodel.py`: queries over `proj_*` for the GET endpoints.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -64,5 +73,7 @@ Tests create a throwaway schema per test inside the database named by
 - Small commits per logical step. Update `PROGRESS.md` when a milestone step lands.
 - Adding an event type or a rule means: a `Rule` in `rules.py`, any new code in the rejection
   table in `PROGRESS.md`, and a refusal test for every new rejection code.
+- Adding a read model means: its table in `schema.sql` and in `PROJ_TABLES`, a handler in
+  `projections.py`, and a test that a rebuild reproduces it.
 - Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
-  workflows, projections beyond `arb_*`, UI, auth, multi-tenancy.
+  workflows, a graph database, vector search, UI, auth, multi-tenancy.

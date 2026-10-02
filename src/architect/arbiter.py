@@ -19,7 +19,7 @@ from psycopg_pool import ConnectionPool
 from ulid import ULID
 
 from architect.contracts import json_path, load_contracts
-from architect.db import EVENT_COLUMNS, row_to_event
+from architect.db import EVENT_COLUMNS, EVENTS_CHANNEL, row_to_event
 from architect.errors import Rejection
 from architect.ledger import event_hash, project_exists
 from architect.rules import RULES
@@ -170,6 +170,8 @@ class Arbiter:
                 ),
             ).fetchone()
             rule.apply(event, state)
+            # Delivered by Postgres only if and when this transaction commits.
+            cur.execute("SELECT pg_notify(%s, %s)", (EVENTS_CHANNEL, project_id))
 
         if self.before_commit is not None:
             self.before_commit()
