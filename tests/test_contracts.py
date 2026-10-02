@@ -1,8 +1,18 @@
 """The frozen contracts load, meta-validate, and locate errors usefully."""
 
+import subprocess
+import sys
+
+import pytest
 from jsonschema import Draft202012Validator
 
-from architect.contracts import SCHEMA_FILES, first_error, json_path, load_contracts
+from architect.contracts import (
+    SCHEMA_FILES,
+    contracts_dir,
+    first_error,
+    json_path,
+    load_contracts,
+)
 
 
 def test_all_five_schemas_meta_validate():
@@ -10,6 +20,28 @@ def test_all_five_schemas_meta_validate():
     assert set(contracts.schemas) == set(SCHEMA_FILES)
     for schema in contracts.schemas.values():
         Draft202012Validator.check_schema(schema)
+
+
+def test_every_schema_id_is_a_v1_id():
+    for name, schema in load_contracts().schemas.items():
+        assert schema["$id"] == f"https://yavin.dev/contracts/v1/{name}"
+
+
+@pytest.mark.parametrize(
+    ("script", "verdict"),
+    [("validate.py", "RESULT: ALL GREEN"), ("fixture/replay.py", "RESULT: REPLAY GREEN")],
+)
+def test_the_contract_scripts_exit_zero(script, verdict):
+    """Run as CI runs them: from the repository root, on the frozen files as they are."""
+    result = subprocess.run(
+        [sys.executable, str(contracts_dir() / script)],
+        cwd=contracts_dir().parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert verdict in result.stdout
 
 
 def test_event_types_match_the_payload_dispatch():
