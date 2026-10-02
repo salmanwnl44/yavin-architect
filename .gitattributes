@@ -1,0 +1,4 @@
+* text=auto eol=lf
+# Frozen contracts are stored byte-for-byte: no line-ending conversion.
+phase0-contracts/** -text
+*.docx binary

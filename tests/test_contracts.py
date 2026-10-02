@@ -1,0 +1,61 @@
+"""The frozen contracts load, meta-validate, and locate errors usefully."""
+
+from jsonschema import Draft202012Validator
+
+from architect.contracts import SCHEMA_FILES, first_error, json_path, load_contracts
+
+
+def test_all_five_schemas_meta_validate():
+    contracts = load_contracts()
+    assert set(contracts.schemas) == set(SCHEMA_FILES)
+    for schema in contracts.schemas.values():
+        Draft202012Validator.check_schema(schema)
+
+
+def test_event_types_match_the_payload_dispatch():
+    contracts = load_contracts()
+    assert len(contracts.event_types) == 19
+    assert set(contracts._event_branch) == set(contracts.event_types)
+
+
+def test_event_error_reports_the_branch_for_the_events_own_type():
+    contracts = load_contracts()
+    event = {
+        "event_id": "evt_0000000001",
+        "project_id": "p",
+        "seq": 0,
+        "ts": "2026-10-02T06:41:00+05:30",
+        "actor": {"kind": "human", "id": "saumya"},
+        "type": "waiver.signed",
+        "payload": {"waiver_id": "wvr_0000000001", "target_ref": "C-010", "risk": "r"},
+        "idempotency_key": "waiver-0001",
+    }
+    error = contracts.event_error(event)
+    assert error is not None
+    assert "'signer' is a required property" in error.message
+    assert json_path(error.path) == "$.payload"
+
+    event["payload"]["signer"] = "saumya"
+    assert contracts.event_error(event) is None
+
+
+def test_embedded_validators_resolve_their_defs():
+    contracts = load_contracts()
+    objection = {
+        "element_refs": ["flw_0000000001"],
+        "narrative": "n",
+        "trigger_condition": "t",
+        "severity": "critical",
+    }
+    error = first_error(contracts.objection, objection)
+    assert error is not None and "falsifiable_test" in error.message
+    objection["falsifiable_test"] = "a test"
+    assert first_error(contracts.objection, objection) is None
+
+
+def test_json_path_formatting():
+    assert json_path(()) == "$"
+    assert json_path(("payload", "claim", "evidence", 0, "source")) == (
+        "$.payload.claim.evidence[0].source"
+    )
+    assert json_path(("payload", "odd key")) == '$.payload["odd key"]'

@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: architect
+      POSTGRES_PASSWORD: architect
+      POSTGRES_DB: architect
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U architect -d architect"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Durable-workflow engine for sessions (spec §13). Unused until the sessions
+  # milestone; start it with `docker compose --profile sessions up`.
+  temporal:
+    image: temporalio/temporal:latest
+    profiles: ["sessions"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0"]
+    ports:
+      - "7233:7233"
+      - "8233:8233"
+
+volumes:
+  pgdata:
