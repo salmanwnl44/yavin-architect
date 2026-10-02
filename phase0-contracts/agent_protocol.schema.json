@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/contracts/v0/agent_protocol.schema.json",
+  "title": "AgentMessage",
+  "description": "Every message between the Harness and its stateless agent workers (spec §12). Agents are proposers: nothing here writes state — the Arbiter turns accepted proposals into ledger events. Free text lives only in designated narrative fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["msg_id", "session_id", "task_id", "agent", "ts", "cost", "depends_on", "type", "body"],
+  "properties": {
+    "msg_id": { "type": "string", "pattern": "^msg_[0-9A-Za-z]{10,26}$" },
+    "session_id": { "type": "string", "pattern": "^ses_[0-9A-Za-z]{10,26}$" },
+    "task_id": { "type": "string", "pattern": "^tsk_[0-9A-Za-z]{10,26}$" },
+    "parent_task": { "type": "string" },
+    "agent": {
+      "type": "object", "additionalProperties": false,
+      "required": ["role", "model_tier"],
+      "properties": {
+        "role": { "enum": ["researcher", "architect", "decomposer", "adversary_security", "adversary_distsys", "adversary_performance", "adversary_reliability", "adversary_cost", "adversary_operability", "adversary_implementability", "verifier", "extractor", "system"] },
+        "model_tier": { "enum": ["tier-cheap", "tier-mid", "tier-frontier", "human", "system"] },
+        "model_family": { "type": "string", "description": "Recorded for the cross-family reviewer rule (§22-3); never used by subsystems to request a model (§5-P8)." }
+      }
+    },
+    "ts": { "type": "string", "format": "date-time" },
+    "cost": {
+      "type": "object", "additionalProperties": false, "required": ["tokens_in", "tokens_out"],
+      "properties": { "tokens_in": { "type": "integer", "minimum": 0 }, "tokens_out": { "type": "integer", "minimum": 0 }, "usd": { "type": "number", "minimum": 0 }, "gpu_seconds": { "type": "number", "minimum": 0 } }
+    },
+    "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Ledger event ids this message's content relies on — the replay link (§5-P10)." },
+    "type": { "enum": ["Task", "Finding", "ClaimProposal", "ModelPatchProposal", "Objection", "VerificationResult", "Question", "CheckpointSummary"] },
+    "body": { "type": "object" }
+  },
+  "oneOf": [
+    { "properties": { "type": { "const": "Task" }, "body": { "$ref": "#/$defs/Task" } } },
+    { "properties": { "type": { "const": "Finding" }, "body": { "$ref": "#/$defs/Finding" } } },
+    { "properties": { "type": { "const": "ClaimProposal" }, "body": { "$ref": "#/$defs/ClaimProposal" } } },
+    { "properties": { "type": { "const": "ModelPatchProposal" }, "body": { "$ref": "#/$defs/ModelPatchProposal" } } },
+    { "properties": { "type": { "const": "Objection" }, "body": { "$ref": "#/$defs/Objection" } } },
+    { "properties": { "type": { "const": "VerificationResult" }, "body": { "$ref": "#/$defs/VerificationResult" } } },
+    { "properties": { "type": { "const": "Question" }, "body": { "$ref": "#/$defs/Question" } } },
+    { "properties": { "type": { "const": "CheckpointSummary" }, "body": { "$ref": "#/$defs/CheckpointSummary" } } }
+  ],
+  "$defs": {
+    "Severity": { "enum": ["critical", "major", "minor"] },
+    "Task": {
+      "type": "object", "additionalProperties": false,
+      "required": ["goal", "scope_element_ids", "budget"],
+      "properties": {
+        "goal": { "type": "string", "minLength": 1 },
+        "scope_element_ids": { "type": "array", "items": { "type": "string" } },
+        "budget": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "tokens": { "type": ["integer", "null"] }, "usd": { "type": ["number", "null"] }, "wall_clock_minutes": { "type": ["integer", "null"] } }
+        },
+        "deadline": { "type": "string", "format": "date-time" },
+        "context_manifest": { "type": "array", "items": { "type": "string" }, "description": "Ledger refs the Context Compiler packed in; what it dropped is recorded separately (§12-6)." }
+      }
+    },
+    "Finding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["summary", "claim_refs"],
+      "properties": {
+        "summary": { "type": "string" },
+        "claim_refs": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "ClaimProposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim"],
+      "properties": { "claim": { "type": "object", "description": "Conforms to claim.schema.json." } }
+    },
+    "ModelPatchProposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["base_version", "ops", "rationale"],
+      "properties": {
+        "base_version": { "type": "string", "pattern": "^mv_" },
+        "rationale": { "type": "string" },
+        "ops": {
+          "type": "array", "minItems": 1,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["op"],
+            "properties": {
+              "op": { "enum": ["add_element", "update_element", "remove_element", "add_link", "remove_link"] },
+              "element_type": { "type": "string" },
+              "element": { "type": "object", "description": "Conforms to the matching $def in system_model.schema.json." },
+              "element_id": { "type": "string" },
+              "link_type": { "enum": ["satisfies", "depends_on", "mitigates"] },
+              "link": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "Objection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["element_refs", "narrative", "trigger_condition", "severity", "falsifiable_test"],
+      "properties": {
+        "element_refs": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "narrative": { "type": "string", "minLength": 1, "description": "The exploit or failure story (§14-L4)." },
+        "trigger_condition": { "type": "string", "minLength": 1, "description": "The condition under which it bites." },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "falsifiable_test": { "type": "string", "minLength": 1, "description": "What would prove this objection wrong — required; un-falsifiable objections are rejected." },
+        "detecting_check": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "existing_check_id": { "type": "string" }, "proposed_check": { "type": "object", "description": "Conforms to check_catalog.schema.json#/$defs/Check — how the harness learns." } }
+        }
+      }
+    },
+    "VerificationResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["check_id", "element_refs", "status"],
+      "properties": {
+        "check_id": { "type": "string" },
+        "element_refs": { "type": "array", "items": { "type": "string" } },
+        "status": { "enum": ["pass", "fail", "error", "skipped"] },
+        "evidence": { "type": "object" }
+      }
+    },
+    "Question": {
+      "type": "object", "additionalProperties": false,
+      "required": ["blocking", "question", "options_considered"],
+      "properties": {
+        "blocking": { "type": "boolean" },
+        "question": { "type": "string" },
+        "options_considered": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "CheckpointSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["phase", "open_risk_ids", "spend"],
+      "properties": {
+        "phase": { "enum": ["frame", "research", "model", "draft", "attack", "repair", "verify", "converge", "package"] },
+        "best_version": { "type": "string" },
+        "open_risk_ids": { "type": "array", "items": { "type": "string" } },
+        "spend": {
+          "type": "object", "additionalProperties": false, "required": ["tokens"],
+          "properties": { "tokens": { "type": "integer", "minimum": 0 }, "usd": { "type": "number", "minimum": 0 }, "gpu_minutes": { "type": "number", "minimum": 0 } }
+        }
+      }
+    }
+  }
+}

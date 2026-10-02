@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/contracts/v0/claim.schema.json",
+  "title": "Claim",
+  "description": "The atomic unit of knowledge (spec §7). Nothing is storable without typed structure, provenance, and taint; conditional requirements below enforce the no-silent-promotion rules at the schema level.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "subject", "predicate", "object", "status", "taint", "recorded_at", "provenance"],
+  "properties": {
+    "id": { "$ref": "#/$defs/ClaimId" },
+    "subject": { "$ref": "#/$defs/EntityRef" },
+    "predicate": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Edge vocabulary (§8: REQUIRES, CONSTRAINS, REDUCES, SUPPORTS, CONTRADICTS, DEPENDS_ON, ...) or a metric predicate."
+    },
+    "object": { "$ref": "#/$defs/EntityRef" },
+    "magnitude": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "unit"],
+      "properties": {
+        "value": { "type": "number" },
+        "unit": { "type": "string", "minLength": 1 }
+      }
+    },
+    "conditions": {
+      "type": "object",
+      "description": "§5-P9: the conditions under which the claim holds (gpu, batch, dataset, workload...). Keys free-form in v0.1.",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
+    "status": { "$ref": "#/$defs/EpistemicStatus" },
+    "evidence": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/EvidenceRef" }
+    },
+    "taint": { "$ref": "#/$defs/Taint" },
+    "load_bearing": { "type": "boolean", "default": false },
+    "owner": { "type": "string", "description": "Required when status=assumed: who owns resolving it." },
+    "verification_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref"],
+      "properties": {
+        "kind": { "enum": ["experiment", "research_task", "check", "waiver"] },
+        "ref": { "type": "string" }
+      }
+    },
+    "valid_from": { "type": "string", "format": "date" },
+    "valid_to": { "type": ["string", "null"], "format": "date" },
+    "recorded_at": { "type": "string", "format": "date-time" },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["extractor"],
+      "properties": {
+        "extractor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model_tier", "prompt_hash", "pipeline_version"],
+          "properties": {
+            "model_tier": { "enum": ["tier-cheap", "tier-mid", "tier-frontier", "human", "system"] },
+            "prompt_hash": { "type": "string" },
+            "pipeline_version": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "derived_from": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ClaimId" },
+          "description": "Premise chain for inferred claims (§10)."
+        }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "readOnly": true,
+      "description": "Computed by the declared scoring function, never set by an LLM (§7).",
+      "additionalProperties": false,
+      "required": ["value", "inputs"],
+      "properties": {
+        "value": { "type": "number", "minimum": 0, "maximum": 1 },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "source_tier": { "type": "string" },
+            "corroborations": { "type": "integer", "minimum": 0 },
+            "two_pass_agreement": { "type": "boolean" },
+            "verification_events": { "type": "integer", "minimum": 0 },
+            "recency_decay": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        }
+      }
+    },
+    "supersedes": { "$ref": "#/$defs/ClaimId" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["documented", "measured", "observed"] } }, "required": ["status"] },
+      "then": { "required": ["evidence"], "properties": { "evidence": { "minItems": 1 } } }
+    },
+    {
+      "if": { "properties": { "status": { "const": "assumed" } }, "required": ["status"] },
+      "then": { "required": ["owner"] }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "assumed" }, "load_bearing": { "const": true } },
+        "required": ["status", "load_bearing"]
+      },
+      "then": { "required": ["verification_plan"] }
+    },
+    {
+      "if": { "properties": { "status": { "const": "inferred" } }, "required": ["status"] },
+      "then": {
+        "properties": {
+          "provenance": { "required": ["extractor", "derived_from"], "properties": { "derived_from": { "minItems": 1 } } }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "ClaimId": { "type": "string", "pattern": "^clm_[0-9A-Za-z]{10,26}$" },
+    "EpistemicStatus": {
+      "enum": ["documented", "measured", "observed", "inferred", "assumed", "simulated", "proposed", "refuted", "retracted"]
+    },
+    "EntityRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type"],
+      "properties": {
+        "entity_type": { "type": "string", "minLength": 1 },
+        "id": { "type": "string" },
+        "literal": { "type": ["string", "number", "boolean"] }
+      },
+      "oneOf": [{ "required": ["id"] }, { "required": ["literal"] }]
+    },
+    "EvidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "kind"],
+      "properties": {
+        "source": { "type": "string", "pattern": "^src_[0-9A-Za-z]{10,26}$" },
+        "span": { "type": "string", "description": "e.g. 'p.7 ¶2' or 'Table 4' or a byte range." },
+        "kind": { "enum": ["benchmark", "statement", "table", "figure", "code", "measurement", "telemetry"] }
+      }
+    },
+    "Taint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["origin"],
+      "properties": {
+        "origin": { "enum": ["external_untrusted", "external_trusted", "internal", "user"] },
+        "license": { "type": "string" }
+      }
+    }
+  }
+}

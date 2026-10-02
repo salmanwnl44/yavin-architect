@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/contracts/v0/system_model.schema.json",
+  "title": "SystemModelVersion",
+  "description": "One immutable version of the typed System Model the IDE canvas edits (spec §11). Diagrams are projections of this; patches between versions travel as model.patch_* ledger events. Requirement ids (req_*) refer to Requirement claims in the ledger. Traceability (orphans, waivers) is enforced by checks C-001/C-002, not by schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version_id", "project_id", "elements", "links"],
+  "properties": {
+    "version_id": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
+    "project_id": { "type": "string" },
+    "parent_version": { "type": "string" },
+    "elements": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "components": { "type": "array", "items": { "$ref": "#/$defs/Component" } },
+        "interfaces": { "type": "array", "items": { "$ref": "#/$defs/Interface" } },
+        "flows": { "type": "array", "items": { "$ref": "#/$defs/Flow" } },
+        "state_machines": { "type": "array", "items": { "$ref": "#/$defs/StateMachine" } },
+        "slos": { "type": "array", "items": { "$ref": "#/$defs/SLO" } },
+        "capacity_params": { "type": "array", "items": { "$ref": "#/$defs/CapacityParam" } },
+        "failure_modes": { "type": "array", "items": { "$ref": "#/$defs/FailureMode" } },
+        "trust_boundaries": { "type": "array", "items": { "$ref": "#/$defs/TrustBoundary" } },
+        "deployment_units": { "type": "array", "items": { "$ref": "#/$defs/DeploymentUnit" } },
+        "cost_models": { "type": "array", "items": { "$ref": "#/$defs/CostModel" } },
+        "observability_specs": { "type": "array", "items": { "$ref": "#/$defs/ObservabilitySpec" } }
+      }
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "satisfies": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["component", "requirement"], "properties": { "component": { "type": "string" }, "requirement": { "type": "string", "pattern": "^req_" } } }
+        },
+        "depends_on": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["from", "to"], "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "kind": { "enum": ["sync", "async", "data", "build"] } } }
+        },
+        "mitigates": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["control", "risk"], "properties": { "control": { "type": "string" }, "risk": { "type": "string" } } }
+        }
+      }
+    },
+    "decisions": { "type": "array", "items": { "type": "string", "pattern": "^adr_" } }
+  },
+  "$defs": {
+    "Severity": { "enum": ["critical", "major", "minor"] },
+    "Component": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "kind", "stateful", "requirement_refs"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^cmp_[0-9A-Za-z]{10,26}$" },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["service", "datastore", "queue", "cache", "gateway", "hardware", "external"] },
+        "stateful": { "type": "boolean" },
+        "durability_class": { "enum": ["ephemeral", "rebuildable", "durable"], "description": "Required by check C-007 when stateful=true." },
+        "recovery": { "type": "object", "additionalProperties": false, "properties": { "rpo_s": { "type": "number", "minimum": 0 }, "rto_s": { "type": "number", "minimum": 0 }, "path": { "type": "string" } } },
+        "interfaces": { "type": "array", "items": { "type": "string", "pattern": "^if_" } },
+        "deployment_unit": { "type": "string" },
+        "requirement_refs": { "type": "array", "items": { "type": "string", "pattern": "^req_" }, "description": "May be empty only alongside a signed waiver — check C-002." }
+      }
+    },
+    "Interface": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "contract_ref", "style", "idempotent", "authn"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^if_[0-9A-Za-z]{10,26}$" },
+        "contract_ref": { "type": "string", "description": "OpenAPI / proto / JSON Schema ref (§22-7)." },
+        "style": { "enum": ["sync", "async", "stream"] },
+        "idempotent": { "type": "boolean", "description": "Check C-011 requires true for at-least-once consumers." },
+        "authn": { "enum": ["none", "service_identity", "oidc", "mtls", "api_key"] },
+        "versioning": { "type": "string" },
+        "errors": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "Flow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "from", "to", "data_class", "rate"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^flw_[0-9A-Za-z]{10,26}$" },
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "via_interface": { "type": "string" },
+        "data_class": { "enum": ["public", "internal", "secret", "pii"] },
+        "rate": {
+          "type": "object", "additionalProperties": false, "required": ["peak_qps", "payload_bytes"],
+          "properties": { "peak_qps": { "type": "number", "minimum": 0 }, "payload_bytes": { "type": "integer", "minimum": 0 }, "growth_pct_mo": { "type": "number" } }
+        },
+        "encryption_in_transit": { "type": "boolean" },
+        "input_validation": { "type": "string", "description": "Required by check C-008 when the flow crosses a trust boundary." },
+        "backpressure_ref": { "type": "string", "description": "Check C-012." }
+      }
+    },
+    "StateMachine": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "element_ref", "states", "transitions"],
+      "properties": {
+        "id": { "type": "string" },
+        "element_ref": { "type": "string" },
+        "states": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "transitions": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": false, "required": ["from", "to", "on"], "properties": { "from": { "type": "string" }, "to": { "type": "string" }, "on": { "type": "string" }, "guard": { "type": "string" } } }
+        },
+        "invariants": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "SLO": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "applies_to", "metric", "target", "unit"],
+      "properties": {
+        "id": { "type": "string" },
+        "applies_to": { "type": "string" },
+        "metric": { "enum": ["latency", "availability", "error_rate", "rpo", "rto", "durability"] },
+        "percentile": { "type": "number", "minimum": 0, "maximum": 100 },
+        "target": { "type": "number" },
+        "unit": { "type": "string" }
+      }
+    },
+    "CapacityParam": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "value", "unit"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "value": { "type": "number" },
+        "unit": { "type": "string" },
+        "distribution": { "type": "object", "additionalProperties": false, "properties": { "kind": { "enum": ["constant", "poisson", "lognormal", "empirical"] }, "params": { "type": "object" } } }
+      }
+    },
+    "FailureMode": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "element_ref", "cause", "effect", "detection_signal", "severity"],
+      "properties": {
+        "id": { "type": "string" },
+        "element_ref": { "type": "string" },
+        "cause": { "type": "string" },
+        "effect": { "type": "string" },
+        "detection_signal": { "type": "string" },
+        "severity": { "$ref": "#/$defs/Severity" },
+        "mitigation_ref": { "type": "string" }
+      }
+    },
+    "TrustBoundary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "member_elements"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "member_elements": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "DeploymentUnit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "name", "runtime"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "runtime": { "enum": ["k8s", "vm", "bare_metal", "serverless", "edge"] },
+        "region": { "type": "string" },
+        "replicas": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "CostModel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "applies_to", "monthly_usd_estimate"],
+      "properties": {
+        "id": { "type": "string" },
+        "applies_to": { "type": "string" },
+        "monthly_usd_estimate": { "type": "number", "minimum": 0 },
+        "drivers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ObservabilitySpec": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "applies_to", "signals"],
+      "properties": {
+        "id": { "type": "string" },
+        "applies_to": { "type": "string" },
+        "signals": { "type": "array", "items": { "enum": ["metrics", "logs", "traces", "events"] }, "minItems": 1 },
+        "health_definition": { "type": "string" }
+      }
+    }
+  }
+}

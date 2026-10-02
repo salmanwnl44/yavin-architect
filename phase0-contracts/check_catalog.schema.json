@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/contracts/v0/check_catalog.schema.json",
+  "title": "CheckCatalog",
+  "description": "The verification check catalog as versioned data (spec §14). Checks are code with ids; the catalog carries their metadata, parameters, and changelogs. Good L4 objections graduate into new entries here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["catalog_version", "checks"],
+  "properties": {
+    "catalog_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "checks": { "type": "array", "items": { "$ref": "#/$defs/Check" }, "minItems": 1 }
+  },
+  "$defs": {
+    "Check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "layer", "severity", "applies_to", "implementation", "version"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^C-[0-9]{3}$" },
+        "title": { "type": "string", "minLength": 1 },
+        "layer": { "enum": ["L0", "L1", "L2", "L3", "L4", "L5"] },
+        "severity": { "enum": ["critical", "major", "minor"] },
+        "applies_to": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["element_kinds"],
+          "properties": {
+            "element_kinds": {
+              "type": "array",
+              "items": { "enum": ["model", "component", "interface", "flow", "state_machine", "slo", "capacity_param", "failure_mode", "trust_boundary", "deployment_unit", "requirement", "assumption", "decision"] },
+              "minItems": 1
+            },
+            "when": { "type": "string", "description": "Optional selector expression, e.g. \"component.stateful == true\"." }
+          }
+        },
+        "implementation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "ref"],
+          "properties": {
+            "kind": { "enum": ["builtin", "expression", "solver", "simulation", "model_review", "probe"] },
+            "ref": { "type": "string", "description": "Code symbol, template id (TLA+/Alloy), sim scenario, reviewer role, or probe generator." }
+          }
+        },
+        "params": { "type": "object", "description": "Tunables, e.g. {\"headroom\": 1.5} for C-005." },
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "objection_id": { "type": "string" }, "note": { "type": "string" } },
+          "description": "Set when the check graduated from an L4 objection (§14)."
+        },
+        "version": { "type": "integer", "minimum": 1 },
+        "changelog": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["version", "date", "change"],
+            "properties": { "version": { "type": "integer" }, "date": { "type": "string", "format": "date" }, "change": { "type": "string" } }
+          }
+        }
+      }
+    }
+  }
+}

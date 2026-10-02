@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/contracts/v0/ledger_events.schema.json",
+  "title": "LedgerEvent",
+  "description": "One event in a project's append-only ledger (spec §5-P2, §6). Every state change in the platform is exactly one of these, committed by the Arbiter. Payload object shapes are governed per type; objects marked 'see claim.schema.json' etc. are enforced by convention in v0.1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "project_id", "seq", "ts", "actor", "type", "payload", "idempotency_key"],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^evt_[0-9A-Za-z]{10,26}$" },
+    "project_id": { "type": "string", "minLength": 1 },
+    "seq": { "type": "integer", "minimum": 0, "description": "Per-project monotonic commit order, stamped by the Arbiter." },
+    "ts": { "type": "string", "format": "date-time" },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "enum": ["agent", "human", "system"] },
+        "id": { "type": "string", "minLength": 1 },
+        "role": { "type": "string" }
+      }
+    },
+    "session_id": { "type": "string", "pattern": "^ses_[0-9A-Za-z]{10,26}$" },
+    "task_id": { "type": "string", "pattern": "^tsk_[0-9A-Za-z]{10,26}$" },
+    "type": { "$ref": "#/$defs/EventType" },
+    "payload": { "type": "object" },
+    "idempotency_key": { "type": "string", "minLength": 8 },
+    "prev_hash": { "type": "string", "description": "Hash of the previous committed event; optional hash-chain for tamper evidence." }
+  },
+  "oneOf": [
+    { "properties": { "type": { "const": "source.ingested" }, "payload": { "$ref": "#/$defs/SourceIngested" } } },
+    { "properties": { "type": { "const": "claim.proposed" }, "payload": { "$ref": "#/$defs/ClaimProposed" } } },
+    { "properties": { "type": { "const": "claim.committed" }, "payload": { "$ref": "#/$defs/ClaimCommitted" } } },
+    { "properties": { "type": { "const": "claim.status_changed" }, "payload": { "$ref": "#/$defs/ClaimStatusChanged" } } },
+    { "properties": { "type": { "const": "claim.retracted" }, "payload": { "$ref": "#/$defs/ClaimRetracted" } } },
+    { "properties": { "type": { "const": "entity.merged" }, "payload": { "$ref": "#/$defs/EntityMerged" } } },
+    { "properties": { "type": { "const": "entity.merge_reverted" }, "payload": { "$ref": "#/$defs/MergeReverted" } } },
+    { "properties": { "type": { "const": "model.patch_proposed" }, "payload": { "$ref": "#/$defs/ModelPatchProposed" } } },
+    { "properties": { "type": { "const": "model.patch_committed" }, "payload": { "$ref": "#/$defs/ModelPatchCommitted" } } },
+    { "properties": { "type": { "const": "model.version_created" }, "payload": { "$ref": "#/$defs/ModelVersionCreated" } } },
+    { "properties": { "type": { "const": "decision.recorded" }, "payload": { "$ref": "#/$defs/DecisionRecorded" } } },
+    { "properties": { "type": { "const": "objection.raised" }, "payload": { "$ref": "#/$defs/ObjectionRaised" } } },
+    { "properties": { "type": { "const": "objection.resolved" }, "payload": { "$ref": "#/$defs/ObjectionResolved" } } },
+    { "properties": { "type": { "const": "waiver.signed" }, "payload": { "$ref": "#/$defs/WaiverSigned" } } },
+    { "properties": { "type": { "const": "check.result" }, "payload": { "$ref": "#/$defs/CheckResult" } } },
+    { "properties": { "type": { "const": "experiment.recorded" }, "payload": { "$ref": "#/$defs/ExperimentRecorded" } } },
+    { "properties": { "type": { "const": "session.phase_changed" }, "payload": { "$ref": "#/$defs/SessionPhaseChanged" } } },
+    { "properties": { "type": { "const": "session.checkpoint" }, "payload": { "$ref": "#/$defs/SessionCheckpoint" } } },
+    { "properties": { "type": { "const": "budget.updated" }, "payload": { "$ref": "#/$defs/BudgetUpdated" } } }
+  ],
+  "$defs": {
+    "EventType": {
+      "enum": [
+        "source.ingested", "claim.proposed", "claim.committed", "claim.status_changed", "claim.retracted",
+        "entity.merged", "entity.merge_reverted",
+        "model.patch_proposed", "model.patch_committed", "model.version_created",
+        "decision.recorded", "objection.raised", "objection.resolved", "waiver.signed",
+        "check.result", "experiment.recorded",
+        "session.phase_changed", "session.checkpoint", "budget.updated"
+      ]
+    },
+    "EpistemicStatus": {
+      "enum": ["documented", "measured", "observed", "inferred", "assumed", "simulated", "proposed", "refuted", "retracted"]
+    },
+    "SourceIngested": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source_id", "uri", "content_hash", "media_type", "taint_origin"],
+      "properties": {
+        "source_id": { "type": "string", "pattern": "^src_[0-9A-Za-z]{10,26}$" },
+        "uri": { "type": "string" },
+        "content_hash": { "type": "string" },
+        "media_type": { "type": "string" },
+        "license": { "type": "string" },
+        "taint_origin": { "enum": ["external_untrusted", "external_trusted", "internal", "user"] }
+      }
+    },
+    "ClaimProposed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposal_id", "claim"],
+      "properties": {
+        "proposal_id": { "type": "string" },
+        "claim": { "type": "object", "description": "Conforms to claim.schema.json." },
+        "proposer_msg_id": { "type": "string" }
+      }
+    },
+    "ClaimCommitted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "claim"],
+      "properties": {
+        "claim_id": { "type": "string", "pattern": "^clm_[0-9A-Za-z]{10,26}$" },
+        "claim": { "type": "object", "description": "Conforms to claim.schema.json." },
+        "from_proposal": { "type": "string" }
+      }
+    },
+    "ClaimStatusChanged": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "from", "to", "cause_event"],
+      "properties": {
+        "claim_id": { "type": "string" },
+        "from": { "$ref": "#/$defs/EpistemicStatus" },
+        "to": { "$ref": "#/$defs/EpistemicStatus" },
+        "cause_event": { "type": "string", "description": "The verification, waiver, or refutation event id that justifies the move (§7 promotion rules)." }
+      }
+    },
+    "ClaimRetracted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["claim_id", "cause"],
+      "properties": { "claim_id": { "type": "string" }, "cause": { "type": "string" } }
+    },
+    "EntityMerged": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kept_id", "merged_ids", "method"],
+      "properties": {
+        "kept_id": { "type": "string" },
+        "merged_ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "method": { "enum": ["blocking", "embedding", "llm_adjudicated", "human"] }
+      }
+    },
+    "MergeReverted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["merge_event"],
+      "properties": { "merge_event": { "type": "string" } }
+    },
+    "ModelPatchProposed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["proposal_id", "base_version", "patch"],
+      "properties": {
+        "proposal_id": { "type": "string" },
+        "base_version": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
+        "patch": { "type": "object", "description": "ModelPatch ops per agent_protocol.schema.json." },
+        "proposer_msg_id": { "type": "string" }
+      }
+    },
+    "ModelPatchCommitted": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version_id", "base_version", "patch"],
+      "properties": {
+        "version_id": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
+        "base_version": { "type": "string" },
+        "patch": { "type": "object" },
+        "from_proposal": { "type": "string" }
+      }
+    },
+    "ModelVersionCreated": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version_id"],
+      "properties": { "version_id": { "type": "string" }, "parent": { "type": "string" } }
+    },
+    "DecisionRecorded": {
+      "type": "object", "additionalProperties": false,
+      "required": ["adr_id", "decision"],
+      "properties": {
+        "adr_id": { "type": "string", "pattern": "^adr_[0-9A-Za-z]{10,26}$" },
+        "decision": {
+          "type": "object", "additionalProperties": false,
+          "required": ["title", "choice", "evidence_claims", "alternatives", "assumptions", "affected_elements"],
+          "properties": {
+            "title": { "type": "string" },
+            "choice": { "type": "string" },
+            "evidence_claims": { "type": "array", "items": { "type": "string" } },
+            "alternatives": { "type": "array", "items": { "type": "object", "required": ["option", "rejected_because"], "properties": { "option": { "type": "string" }, "rejected_because": { "type": "string" } }, "additionalProperties": false } },
+            "assumptions": { "type": "array", "items": { "type": "string" } },
+            "affected_elements": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "ObjectionRaised": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objection_id", "objection"],
+      "properties": {
+        "objection_id": { "type": "string", "pattern": "^obj_[0-9A-Za-z]{10,26}$" },
+        "objection": { "type": "object", "description": "Conforms to the Objection body in agent_protocol.schema.json." }
+      }
+    },
+    "ObjectionResolved": {
+      "type": "object", "additionalProperties": false,
+      "required": ["objection_id", "resolution", "ref"],
+      "properties": {
+        "objection_id": { "type": "string" },
+        "resolution": { "enum": ["patched", "waived", "withdrawn", "converted_to_check"] },
+        "ref": { "type": "string", "description": "The patch, waiver, or check that resolves it." }
+      }
+    },
+    "WaiverSigned": {
+      "type": "object", "additionalProperties": false,
+      "required": ["waiver_id", "target_ref", "risk", "signer"],
+      "properties": {
+        "waiver_id": { "type": "string", "pattern": "^wvr_[0-9A-Za-z]{10,26}$" },
+        "target_ref": { "type": "string" },
+        "risk": { "type": "string", "minLength": 1 },
+        "signer": { "type": "string", "description": "Human id; §5-P11 — waivers are signed human events." }
+      }
+    },
+    "CheckResult": {
+      "type": "object", "additionalProperties": false,
+      "required": ["result_id", "check_id", "element_refs", "status"],
+      "properties": {
+        "result_id": { "type": "string", "pattern": "^chk_[0-9A-Za-z]{10,26}$" },
+        "check_id": { "type": "string", "pattern": "^C-[0-9]{3}$" },
+        "element_refs": { "type": "array", "items": { "type": "string" } },
+        "status": { "enum": ["pass", "fail", "error", "skipped"] },
+        "evidence": { "type": "object" }
+      }
+    },
+    "ExperimentRecorded": {
+      "type": "object", "additionalProperties": false,
+      "required": ["experiment_id", "result_claims"],
+      "properties": {
+        "experiment_id": { "type": "string", "pattern": "^exp_[0-9A-Za-z]{10,26}$" },
+        "design_ref": { "type": "string" },
+        "result_claims": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+      }
+    },
+    "SessionPhaseChanged": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_id", "to"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "from": { "$ref": "#/$defs/Phase" },
+        "to": { "$ref": "#/$defs/Phase" }
+      }
+    },
+    "SessionCheckpoint": {
+      "type": "object", "additionalProperties": false,
+      "required": ["session_id", "phase", "open_risk_ids", "spend"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "phase": { "$ref": "#/$defs/Phase" },
+        "best_version": { "type": "string" },
+        "open_risk_ids": { "type": "array", "items": { "type": "string" } },
+        "spend": {
+          "type": "object", "additionalProperties": false, "required": ["tokens"],
+          "properties": { "tokens": { "type": "integer", "minimum": 0 }, "usd": { "type": "number", "minimum": 0 }, "gpu_minutes": { "type": "number", "minimum": 0 } }
+        }
+      }
+    },
+    "BudgetUpdated": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "limits"],
+      "properties": {
+        "scope": {
+          "type": "object", "additionalProperties": false,
+          "properties": { "tenant": { "type": "string" }, "session": { "type": "string" }, "phase": { "$ref": "#/$defs/Phase" } }
+        },
+        "limits": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "tokens": { "type": ["integer", "null"] },
+            "usd": { "type": ["number", "null"], "description": "null = uncapped (Industrial tier local inference, §22-8)." },
+            "wall_clock_minutes": { "type": ["integer", "null"] },
+            "gpu_minutes": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+    "Phase": {
+      "enum": ["frame", "research", "model", "draft", "attack", "repair", "verify", "converge", "package"]
+    }
+  }
+}
