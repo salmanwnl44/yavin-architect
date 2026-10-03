@@ -83,7 +83,9 @@ class Pipeline:
         """Parse the source's bytes from the object store. Deterministic."""
         data = self._store.get(source.content_hash)
         if source.media_type != MEDIA_REPO:
-            return parse_file(source.source_id, data, source.media_type)
+            # a single file's locators carry its name, taken from the uri's last path element
+            name = source.uri.rsplit("/", 1)[-1].split("@", 1)[0] or "document"
+            return parse_file(source.source_id, data, source.media_type, name)
         segments: list[Segment] = []
         for file in repo_files(data):
             parsed = parse_file(

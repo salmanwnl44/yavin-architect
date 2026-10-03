@@ -172,7 +172,10 @@ def test_trusted_domains_are_the_only_external_trusted(pool, ingestor, config, m
             if "rev-parse" in command:
                 return type("R", (), {"stdout": "deadbeef\n"})()
             Path(command[-1]).mkdir(parents=True)
-            Path(command[-1], "README.md").write_text("# trusted\n\nhello\n", encoding="utf-8")
+            url = command[-2]  # distinct content per host, or the dedupe would merge them
+            Path(command[-1], "README.md").write_text(
+                f"# repo\n\ncloned from {url}\n", encoding="utf-8"
+            )
             return type("R", (), {"stdout": ""})()
 
     monkeypatch.setattr(sources_module.subprocess, "run", FakeRun())
