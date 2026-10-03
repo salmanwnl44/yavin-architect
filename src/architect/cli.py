@@ -11,7 +11,7 @@ from pathlib import Path
 
 from psycopg_pool import ConnectionPool
 
-from architect import ledger, projector
+from architect import ledger, projector, readmodel
 from architect.arbiter import ARBITER_STAMPED, Arbiter
 from architect.checks import runner as check_runner
 from architect.db import database_url, ensure_schema, open_pool
@@ -19,6 +19,11 @@ from architect.errors import Rejection
 from architect.gateway.errors import GatewayError
 from architect.gateway.gateway import Gateway, default_providers
 from architect.gateway.request import GatewayRequest
+from architect.ingestion.config import load_ingest_config
+from architect.ingestion.extract import PIPELINE_VERSION
+from architect.ingestion.objectstore import LocalObjectStore
+from architect.ingestion.pipeline import Pipeline
+from architect.ingestion.sources import Ingestor
 from architect.projections import ProjectionError
 from architect.projector import DEFAULT_BATCH, DEFAULT_POLL_SECONDS, Projector
 from architect.rebuild import rebuild_state
@@ -214,6 +219,59 @@ def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _ingest_source(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    ingestor = Ingestor(pool, LocalObjectStore(), load_ingest_config())
+    try:
+        if args.github:
+            source = ingestor.ingest_github(args.project, args.github, args.ref)
+        else:
+            source = ingestor.ingest_file(args.project, args.file or args.pdf, args.origin)
+    except Rejection as rejection:
+        print(f"rejected {json.dumps(rejection.body())}", file=sys.stderr)
+        return 1
+    Projector(pool).catch_up(args.project)
+    print(json.dumps(source.__dict__, indent=2, sort_keys=True))
+    return 0
+
+
+def _extract(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    pipeline = Pipeline(
+        pool, Gateway(pool, providers=default_providers()), LocalObjectStore(), load_ingest_config()
+    )
+    try:
+        version = args.pipeline_version if args.pipeline_version is not None else PIPELINE_VERSION
+        report = pipeline.run(args.project, args.source, version)
+    except (Rejection, GatewayError, LookupError) as error:
+        print(f"extraction stopped: {error}", file=sys.stderr)
+        return 1
+    Projector(pool).catch_up(args.project)
+    print(json.dumps(report.__dict__, indent=2, sort_keys=True, default=list))
+    return 0
+
+
+def _sources(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    for row in readmodel.list_sources(pool, args.project):
+        print(json.dumps(row, sort_keys=True))
+    return 0
+
+
+def _claims(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    for row in readmodel.claims_by_grade(pool, args.project, args.grade):
+        print(json.dumps(row, sort_keys=True, default=str))
+    return 0
+
+
 def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     if not _project_known(pool, args.project):
         return 1
@@ -316,6 +374,38 @@ def _parser() -> argparse.ArgumentParser:
     calls = gateway_sub.add_parser("calls", help="the most recent calls in the call log")
     calls.add_argument("--limit", type=int, default=20)
     gateway.set_defaults(run=_gateway)
+
+    ingest_source = sub.add_parser("ingest-source", help="ingest a file, a PDF or a git repository")
+    what = ingest_source.add_mutually_exclusive_group(required=True)
+    what.add_argument("--file", type=Path)
+    what.add_argument("--pdf", type=Path)
+    what.add_argument("--github", help="repository URL (cloned with git)")
+    ingest_source.add_argument("--project", required=True)
+    ingest_source.add_argument("--ref", default=None, help="branch or tag for --github")
+    ingest_source.add_argument(
+        "--origin",
+        default="user",
+        choices=["user", "internal", "external_trusted"],
+        help="taint origin for a local file (a repository is always external)",
+    )
+    ingest_source.set_defaults(run=_ingest_source)
+
+    extract = sub.add_parser("extract", help="extract claims from a source through two passes")
+    extract.add_argument("--project", required=True)
+    extract.add_argument("--source", required=True, help="source id")
+    extract.add_argument("--pipeline-version", type=int, default=None)
+    extract.set_defaults(run=_extract)
+
+    sources = sub.add_parser("sources", help="the project's ingested sources")
+    sources.add_argument("--project", required=True)
+    sources.set_defaults(run=_sources)
+
+    claims = sub.add_parser("claims", help="the project's claims, by grade")
+    claims.add_argument("--project", required=True)
+    claims.add_argument(
+        "--grade", default=None, choices=["quarantined", "unverified", "design_grade"]
+    )
+    claims.set_defaults(run=_claims)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)
