@@ -14,13 +14,14 @@
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 | M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
+| M7 console, golden task #1, Phase 1 exit test | **blocked at Step 0** (2026-10-03): the three amendments are applied on the local branch `m7-phase1-exit`; the app's key was not visible to the session, so the live baseline and everything after it have not been run |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
 the read side, M3 built the checks engine, C2 moved the contracts to v1.1 (a minor version:
 optional fields and documented rules, every v1.0 document still valid), M4 built the gateway,
 M5 the ingestion pipeline and M6 the session engine. CI runs the whole suite on `postgres:16`
-with a Temporal dev server beside it: see the M6 section for the output. M7 has not been
-started.
+with a Temporal dev server beside it: see the M6 section for the output. M7 is blocked
+at its Step 0: see "M7 (blocked at Step 0)" below.
 
 ## M0: scaffold
 
@@ -1248,6 +1249,60 @@ Temporal dev server started by the Temporal CLI, `ARCHITECT_TEMPORAL_ADDRESS=loc
 Nothing skipped; the four deselected tests are the live ones (L1, L2, L3, L4). The same suite
 on the Windows development machine against the portable PostgreSQL 16: `295 passed, 4
 deselected in 402.38s`.
+
+## M7 (blocked at Step 0)
+
+Status on 2026-10-03, branch `m7-phase1-exit`, local only, not pushed. No Part A to F code
+exists yet. The Phase 1 exit test has not been attempted.
+
+**Amendments applied before the M7 prompt**
+
+1. The Anthropic provider and `default_providers` read `ARCHITECT_ANTHROPIC_API_KEY`, then
+   `ANTHROPIC_API_KEY`. G9 sets a second, distinct fake key under the new name and asserts
+   that neither fake appears in any `gw_*` row, log line or exception. New tests:
+   `test_gateway_providers.py::test_anthropic_key_comes_from_the_app_variable_before_the_conventional_one`
+   and `::test_default_providers_registers_anthropic_for_either_key_name`.
+2. L2 carries `live_openai_compat` and is deselected at collection unless
+   `OPENAI_COMPAT_BASE_URL` is set. Collection only, checked three ways: default run 298
+   collected and 4 deselected; `pytest -m live` without the URL selects L1, L3, L4; with the
+   URL it selects all four. The edit to L2 is the marker line alone.
+3. The L3 document is `tests/live_docs/arxiv-2609.32972v1.pdf` (gitignored, not committed):
+   "Time Semantics and Liveness Artifacts in Adversarial Consensus Simulation",
+   <https://arxiv.org/abs/2609.32972v1>, primary category cs.DC. License CC BY 4.0, as read
+   from arXiv's own record for the paper. 6 pages counted from the file, 440313 bytes, sha256
+   `ceeacf2faebc55a473fee138e9ba083312e3da9066ab826351090d4d35eaeb6c`. The existing
+   segmenter parses it into 136 statement segments (`p.1 ¶1` to `p.6 ¶20`), about 35 thousand
+   characters, none over the truncation limit. Pass B makes one tier-mid call per segment
+   that has a surviving candidate, so L3 on this paper can make up to 136 such calls.
+
+**Step 0 was not run.** `ARCHITECT_ANTHROPIC_API_KEY`, `ANTHROPIC_API_KEY` and
+`OPENAI_COMPAT_BASE_URL` were all unset in the session's tool processes and at user and
+machine scope. No live test ran and nothing was spent.
+
+**Local runs of the non-live suite on the branch** (Windows, portable PostgreSQL 16, mock
+providers only; no CI run exists for these commits):
+
+| Run | Result |
+| --- | --- |
+| Full suite, first | 297 passed, **1 failed**, 4 deselected. The failure was `test_sessions.py::test_s7_steer_enters_the_next_context_and_cancel_packages`; its assertion text was not captured |
+| That test alone, four times | 4 passed |
+| Full suite, second | 298 passed, 4 deselected |
+
+That S7 test is therefore intermittent, and its cause is not diagnosed. The sessions package,
+the session tests and their fixtures are byte-identical on this branch and on `main`, so the
+same behaviour is to be expected on `main`, where it has not been observed: the M6 runs
+(three in CI, one local) were green. Reading the test shows two places where the outcome
+depends on when a signal lands relative to a step boundary (the first `pause` against the
+frame step, and the poll for the transient `draft` phase). Which of them fired is a
+hypothesis, not a finding. The test was not edited.
+
+**Open before M7 can continue**
+
+- The key must be visible to the session (launch from a shell where the variable is set).
+- The guards of L1, L3 and L4 still test `ANTHROPIC_API_KEY`; with only the app's variable
+  set they fail before any call. Editing them needs the owner's go-ahead.
+- The intermittent S7 test needs the owner's decision (diagnose and correct the test, or the
+  workflow if the race is real there).
 
 ## Windows
 
