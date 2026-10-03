@@ -35,6 +35,7 @@ PROJ_TABLES = (
     "proj_decisions",
     "proj_waivers",
     "proj_checks",
+    "proj_budgets",
     "proj_session_timeline",
 )
 
@@ -314,6 +315,14 @@ class _Fold:
             ),
         )
 
+    # budgets (read by the model gateway)
+    def budget_updated(self) -> None:
+        p = self.payload
+        self.cur.execute(
+            "INSERT INTO proj_budgets (project_id, seq, scope, limits) VALUES (%s, %s, %s, %s)",
+            (self.pid, self.seq, Jsonb(p.get("scope", {})), Jsonb(p["limits"])),
+        )
+
     # session timeline
     def session_phase_changed(self) -> None:
         p = self.payload
@@ -362,6 +371,7 @@ HANDLERS = {
     "check.result": _Fold.check_result,
     "session.phase_changed": _Fold.session_phase_changed,
     "session.checkpoint": _Fold.session_checkpoint,
+    "budget.updated": _Fold.budget_updated,
 }
 
 # Committed events with no read model yet. Listed so a new event type is a decision, not
@@ -373,7 +383,6 @@ NOT_PROJECTED = frozenset(
         "entity.merged",
         "entity.merge_reverted",
         "experiment.recorded",
-        "budget.updated",
     }
 )
 
