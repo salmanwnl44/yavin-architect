@@ -1,0 +1,47 @@
+# The gateway's model table (module M4). This is the ONLY place a model id, a model family
+# or a price appears. Everything else asks for a tier.
+#
+# Each tier is an ORDERED candidate list: the first eligible candidate serves a request, the
+# next one is the fallback. `sampling` says whether the provider is sent a temperature: the
+# Anthropic SDK (1.x) has no sampling parameters, so it is false for every Anthropic model.
+tiers:
+  tier-cheap:
+    - provider: anthropic
+      model: claude-haiku-4-5-20251001
+      family: anthropic-claude
+      sampling: false
+  tier-mid:
+    - provider: anthropic
+      model: claude-sonnet-5-5
+      family: anthropic-claude
+      sampling: false
+  tier-frontier:
+    - provider: anthropic
+      model: claude-opus-5-5
+      family: anthropic-claude
+      sampling: false
+
+# Appended to every tier, after the candidates above, only when OPENAI_COMPAT_BASE_URL is
+# set. This is how a local vLLM plugs in (the Industrial tier).
+openai_compat:
+  model: local-model
+  family: local-vllm
+  sampling: true
+
+# USD per million tokens. VERIFY against the provider's current pricing page.
+prices:
+  claude-haiku-4-5-20251001: { input: 1.00, output: 5.00 }   # VERIFY against the provider's current pricing page
+  claude-sonnet-5-5: { input: 2.00, output: 10.00 }          # VERIFY against the provider's current pricing page
+  claude-opus-5-5: { input: 4.00, output: 20.00 }            # VERIFY against the provider's current pricing page
+  local-model: { input: 0.0, output: 0.0 }                   # VERIFY: local inference is priced by the owner
+
+retries:
+  max_attempts: 3        # per candidate, on retryable errors (429, 529, 5xx, timeouts)
+  base_delay_s: 0.5
+  max_delay_s: 8.0
+structured:
+  max_retries: 2         # extra attempts after an invalid structured output
+concurrency:             # simultaneous in-flight calls per provider
+  anthropic: 4
+  openai_compat: 4
+  mock: 16
