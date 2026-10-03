@@ -556,6 +556,13 @@ def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _new_project(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect new-project P: create a project (a ledger of its own). Idempotent."""
+    created = ledger.create_project(pool, args.project)
+    print(f"project {args.project!r} {'created' if created else 'already exists'}")
+    return 0
+
+
 def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
     """architect golden run TASK [--mode review|design] [--live] [--kill-after attack]."""
     import asyncio
@@ -795,6 +802,10 @@ def _parser() -> argparse.ArgumentParser:
     why.add_argument("--element", required=True)
     why.add_argument("--version", default=None, help="default: the head model")
     why.set_defaults(run=_why)
+
+    new_project = sub.add_parser("new-project", help="create a project")
+    new_project.add_argument("project")
+    new_project.set_defaults(run=_new_project)
 
     golden = sub.add_parser("golden", help="run a golden task and write its scorecard")
     golden_sub = golden.add_subparsers(dest="golden_command", required=True)

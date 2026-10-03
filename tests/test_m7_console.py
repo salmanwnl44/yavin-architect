@@ -459,3 +459,12 @@ def test_the_api_takes_a_seed_refuses_what_the_gate_cannot_take_and_extends(
             raise AssertionError("never approved")
         late = client.post(f"{base}/{session_id}/reject")
         assert late.status_code == 422 and "no human gate is open" in late.json()["detail"]
+
+
+def test_new_project_from_the_command_line(dsn, pool, capsys):
+    assert cli(dsn, capsys, "new-project", "demo") == (0, "project 'demo' created\n", "")
+    assert cli(dsn, capsys, "new-project", "demo") == (0, "project 'demo' already exists\n", "")
+    code, _, err = cli(
+        dsn, capsys, "session", "show", "--project", "demo", "--session", "ses_NONE000001"
+    )
+    assert code == 1 and "is not in project 'demo'" in err
