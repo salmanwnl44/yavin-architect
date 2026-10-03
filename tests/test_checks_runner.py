@@ -254,9 +254,17 @@ def test_results_are_recorded_once_per_inputs(pool, fixture_project, tmp_path):
 
     recorded = runner.recorded(pool, FIX, V3)
     assert {cid: (r["status"], r["element_refs"]) for cid, r in recorded.items()} == EXPECTED_ON_V3
-    assert runner.recorded(pool, FIX, V2) == {}, "results are keyed by the version they judge"
-    # the ledger's own three check results predate the runner and name no version: head then
-    assert sorted(runner.recorded(pool, FIX, V2, as_of_seq=None)) == []
+    assert all(r["evidence"]["model_version"] == V3 for r in recorded.values())
+    # The ledger's own three check results predate the runner and name no version, so they
+    # are keyed by the head of their time: C-005 and C-008 under V2, C-009 under V3, where
+    # the runner's later C-009 result now outranks it.
+    own = runner.recorded(pool, FIX, V2)
+    assert {cid: r["result_id"] for cid, r in own.items()} == {
+        "C-005": "chk_FIXC005A01",
+        "C-008": "chk_FIXC008F01",
+    }
+    assert runner.recorded(pool, FIX, V2, as_of_seq=LAST_SEQ) == {}
+    assert recorded["C-009"]["result_id"] != "chk_FIXC009P01"
 
     # A stricter catalog: headroom 2.0, check version bumped, so the inputs hash changes.
     catalog = {"catalog_version": "1.1.0", "checks": list(load_catalog().checks)}
@@ -362,6 +370,9 @@ def test_check_and_gate_commands(pool, fixture_project, cli):
 def test_the_check_endpoints(client, pool):
     commit_fixture(pool)
     base = f"/v1/projects/{FIX}/models/{V3}"
+    unprojected = client.get(f"{base}/checks")
+    assert unprojected.status_code == 404, "the read models have not caught up yet"
+    Projector(pool).catch_up(FIX)
 
     empty = client.get(f"{base}/checks")
     assert empty.status_code == 200 and empty.json() == {"model_version": V3, "results": []}
@@ -379,7 +390,7 @@ def test_the_check_endpoints(client, pool):
     assert all(r["evidence"]["model_version"] == V3 for r in listed)
 
     gate = client.get(f"{base}/gate").json()
-    assert gate["verdict"] == "BLOCKED"
+    assert gate["verdict"] == "BLOCKED" and gate["as_of_seq"] == LAST_SEQ
     assert {(r["check_id"], r["status"]) for r in gate["reasons"]} == {
         ("C-005", "error"),
         ("C-007", "fail"),

@@ -187,6 +187,17 @@ def run(
     return RunReport(version_id, as_of_seq, catalog.version, results)
 
 
+def latest_recorded_as_of(pool: ConnectionPool, project_id: str, version_id: str) -> int | None:
+    """The as_of_seq of the most recent battery recorded for a version, or None."""
+    with pool.connection() as conn:
+        row = conn.execute(
+            "SELECT max((evidence ->> 'as_of_seq')::bigint) AS as_of FROM proj_checks "
+            "WHERE project_id = %s AND version_id = %s AND evidence ? 'as_of_seq'",
+            (project_id, version_id),
+        ).fetchone()
+    return row["as_of"]
+
+
 def recorded(
     pool: ConnectionPool, project_id: str, version_id: str, as_of_seq: int | None = None
 ) -> dict[str, dict[str, Any]]:
@@ -215,6 +226,10 @@ def gate(
 ) -> dict[str, Any]:
     """IMPLEMENTATION_READY from the results on record for (version, as_of_seq).
 
+    Recording a battery appends events, so the ledger's latest seq is always past the
+    battery's as_of_seq; without an explicit seq the gate judges the most recent battery
+    recorded for the version.
+
     Blocking: a critical check without a recorded result, a critical check that failed or
     could not be evaluated, or a critical objection open as of the seq that touches the
     version. Major and minor failures are warnings.
@@ -227,6 +242,8 @@ def gate(
             "MODEL_VERSION_NOT_FOUND",
             f"no projected model version {version_id} in project {project_id!r}",
         )
+    if as_of_seq is None:
+        as_of_seq = latest_recorded_as_of(pool, project_id, version_id)
     if as_of_seq is None:
         as_of_seq = latest_seq(pool, project_id)
     results = recorded(pool, project_id, version_id, as_of_seq)
