@@ -14,6 +14,8 @@ dependencies = [
     "httpx2",
     "jsonschema>=4.23",
     "psycopg[binary,pool]>=3.2",
+    "pymupdf>=1.26",
+    "python-multipart>=0.0.9",
     "python-ulid>=2.7",
     "pyyaml>=6",
     "referencing>=0.35",
@@ -50,4 +52,4 @@ extend-exclude = ["phase0-contracts"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["architect", "builders", "conftest", "replay_reference"]
+known-first-party = ["architect", "builders", "conftest", "ingest_fixtures", "replay_reference"]

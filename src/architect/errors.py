@@ -11,6 +11,7 @@ NOT_FOUND_CODES = frozenset(
         "MODEL_VERSION_NOT_FOUND",
         "CLAIM_NOT_FOUND",
         "ELEMENT_NOT_FOUND",
+        "SOURCE_NOT_FOUND",
     }
 )
 

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
-from fastapi import Body, FastAPI, Query, Request
+from fastapi import Body, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -17,6 +17,13 @@ from architect.checks import runner
 from architect.contracts import json_path, load_contracts
 from architect.db import ensure_schema, open_pool
 from architect.errors import Rejection
+from architect.gateway.gateway import Gateway, default_providers
+from architect.ingestion.config import load_ingest_config
+from architect.ingestion.extract import PIPELINE_VERSION
+from architect.ingestion.objectstore import LocalObjectStore
+from architect.ingestion.pipeline import Pipeline
+from architect.ingestion.sources import Ingestor
+from architect.projector import Projector
 
 MAX_PAGE = 1000
 
@@ -25,7 +32,7 @@ class ProjectIn(BaseModel):
     project_id: str = Field(min_length=1)
 
 
-def create_app(database_url: str | None = None) -> FastAPI:
+def create_app(database_url: str | None = None, gateway: Gateway | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         load_contracts()
@@ -33,6 +40,8 @@ def create_app(database_url: str | None = None) -> FastAPI:
         ensure_schema(pool)
         app.state.pool = pool
         app.state.arbiter = Arbiter(pool)
+        app.state.gateway = gateway or Gateway(pool, providers=default_providers())
+        app.state.object_store = LocalObjectStore()
         try:
             yield
         finally:
@@ -139,9 +148,22 @@ def create_app(database_url: str | None = None) -> FastAPI:
         status: str | None = None,
         load_bearing: bool | None = None,
         as_of_seq: Annotated[int | None, Query(ge=0)] = None,
+        grade: str | None = None,
     ) -> dict[str, Any]:
-        """Claims in commit order. as_of_seq answers "what did we believe once seq N landed"."""
+        """Claims in commit order. as_of_seq answers "what did we believe once seq N landed";
+        grade (quarantined | unverified | design_grade) lists by M5 grade."""
         require_project(request, project_id)
+        if grade is not None:
+            if grade not in ("quarantined", "unverified", "design_grade"):
+                raise Rejection(
+                    "MALFORMED_REQUEST",
+                    "grade must be quarantined, unverified or design_grade",
+                    "$.grade",
+                )
+            return {
+                "claims": readmodel.claims_by_grade(request.app.state.pool, project_id, grade),
+                "grade": grade,
+            }
         statuses = load_contracts().schemas["claim.schema.json"]["$defs"]["EpistemicStatus"]["enum"]
         if status is not None and status not in statuses:
             raise Rejection(
@@ -181,6 +203,64 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def get_projection_status(request: Request, project_id: str) -> dict[str, Any]:
         require_project(request, project_id)
         return projector.status(request.app.state.pool, project_id)
+
+    # Ingestion (M5). Sources in through the Arbiter; extraction through the gateway.
+
+    @app.get("/v1/projects/{project_id}/sources")
+    def list_sources(request: Request, project_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        Projector(request.app.state.pool).catch_up(project_id)
+        return {"sources": readmodel.list_sources(request.app.state.pool, project_id)}
+
+    @app.post("/v1/projects/{project_id}/sources", status_code=201)
+    def add_source(
+        request: Request,
+        project_id: str,
+        file: Annotated[UploadFile | None, File()] = None,
+        origin: Annotated[str, Form()] = "user",
+        github_url: Annotated[str | None, Form()] = None,
+        ref: Annotated[str | None, Form()] = None,
+    ) -> dict[str, Any]:
+        """Multipart: a file (with an optional origin), or a github_url (with an optional ref)."""
+        require_project(request, project_id)
+        pool = request.app.state.pool
+        ingestor = Ingestor(pool, request.app.state.object_store, load_ingest_config())
+        if file is not None:
+            import tempfile
+            from pathlib import Path as _Path
+
+            with tempfile.TemporaryDirectory() as tmp:
+                path = _Path(tmp) / (file.filename or "upload.txt")
+                path.write_bytes(file.file.read())
+                source = ingestor.ingest_file(project_id, path, origin)
+        elif github_url:
+            source = ingestor.ingest_github(project_id, github_url, ref)
+        else:
+            raise Rejection("MALFORMED_REQUEST", "send a file or a github_url", "$")
+        Projector(pool).catch_up(project_id)
+        return source.__dict__
+
+    @app.post("/v1/projects/{project_id}/sources/{source_id}/extract")
+    def extract_source(
+        request: Request,
+        project_id: str,
+        source_id: str,
+        pipeline_version: Annotated[int, Query(ge=1)] = PIPELINE_VERSION,
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        pool = request.app.state.pool
+        Projector(pool).catch_up(project_id)
+        pipeline = Pipeline(
+            pool, request.app.state.gateway, request.app.state.object_store, load_ingest_config()
+        )
+        try:
+            report = pipeline.run(project_id, source_id, pipeline_version)
+        except LookupError as missing:
+            raise Rejection("SOURCE_NOT_FOUND", str(missing)) from missing
+        Projector(pool).catch_up(project_id)
+        body = dict(report.__dict__)
+        body["quarantined"] = [list(x) for x in report.quarantined]
+        return body
 
     # The checks engine (M3). A run records its results through the Arbiter.
 

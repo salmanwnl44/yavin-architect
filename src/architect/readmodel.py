@@ -20,7 +20,8 @@ Row = dict[str, Any]
 
 _CLAIM_COLUMNS = (
     "claim_id, status, load_bearing, taint_origin, supersedes, derived_from, "
-    "premise_compromised, first_seq, last_seq, claim"
+    "premise_compromised, first_seq, last_seq, claim, grade, confidence, confidence_inputs, "
+    "two_pass_agreement"
 )
 
 # Claims as they stood once event `seq` was committed: status from the history, and
@@ -44,7 +45,8 @@ WITH RECURSIVE status_then AS (
 )
 SELECT c.claim_id, s.status, c.load_bearing, c.taint_origin, c.supersedes, c.derived_from,
        (c.claim_id IN (SELECT claim_id FROM compromised)) AS premise_compromised,
-       c.first_seq, s.from_seq AS last_seq, c.claim
+       c.first_seq, s.from_seq AS last_seq, c.claim, c.grade, c.confidence, c.confidence_inputs,
+       c.two_pass_agreement
 FROM proj_claims c
 JOIN status_then s ON s.claim_id = c.claim_id
 WHERE c.project_id = %(pid)s
@@ -280,3 +282,36 @@ def why(pool: ConnectionPool, project_id: str, element_id: str) -> Row | None:
             for row in decisions
         ],
     }
+
+
+# --- M5: sources and grades ---------------------------------------------------------------------
+
+
+def list_sources(pool: ConnectionPool, project_id: str) -> list[Row]:
+    with pool.connection() as conn:
+        return conn.execute(
+            "SELECT source_id, uri, content_hash, media_type, license, taint_origin, seq "
+            "FROM proj_sources WHERE project_id = %s ORDER BY seq",
+            (project_id,),
+        ).fetchall()
+
+
+def claims_by_grade(pool: ConnectionPool, project_id: str, grade: str | None) -> list[Row]:
+    """Committed claims with their grade and confidence; `quarantined` lists the proposals that
+    were never committed."""
+    with pool.connection() as conn:
+        if grade == "quarantined":
+            return conn.execute(
+                "SELECT claim_id, proposal_id, seq, 'quarantined' AS grade, claim "
+                "FROM proj_claim_proposals WHERE project_id = %s AND NOT committed ORDER BY seq",
+                (project_id,),
+            ).fetchall()
+        query = (
+            "SELECT claim_id, status, grade, confidence, confidence_inputs, two_pass_agreement, "
+            "taint_origin, first_seq, claim FROM proj_claims WHERE project_id = %s"
+        )
+        params: list[Any] = [project_id]
+        if grade is not None:
+            query += " AND grade = %s"
+            params.append(grade)
+        return conn.execute(query + " ORDER BY first_seq", params).fetchall()
