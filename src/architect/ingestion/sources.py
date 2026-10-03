@@ -127,6 +127,8 @@ class Ingestor:
         for path in sorted(p for p in root.rglob("*") if p.is_file()):
             relative = path.relative_to(root).as_posix()
             parts = relative.split("/")
+            if ".git" in parts[:-1]:
+                continue  # the clone's own metadata is not content
             if any(part in self._config.skip_dirs for part in parts[:-1]):
                 skipped.append({"path": relative, "reason": "vendored"})
                 continue

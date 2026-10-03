@@ -432,7 +432,11 @@ class Pipeline:
             conn.execute(
                 "INSERT INTO ing_metrics (job_id, metric, value) VALUES (%s, %s, %s) "
                 "ON CONFLICT (job_id, metric) DO UPDATE SET value = "
-                + ("ing_metrics.value + EXCLUDED.value" if add else "EXCLUDED.value"),
+                + (
+                    "to_jsonb((ing_metrics.value)::int + (EXCLUDED.value)::int)"
+                    if add
+                    else "EXCLUDED.value"
+                ),
                 (job_id, metric, Jsonb(value)),
             )
 
