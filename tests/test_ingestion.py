@@ -424,9 +424,11 @@ def test_the_same_claim_from_two_sources_is_design_grade(
         pool, ingestor, tmp_path, "b.md", README.replace("Lease Protocol", "Lease Protocol (copy)")
     )
     assert first.content_hash != second.content_hash
-    base = claim_of(FENCING_LOCATOR, "WAL", "rejects", "stale epoch appends", FENCING_QUOTE)
-    for _ in range(2):
-        mock.enqueue({"claims": [dict(base, segment_locator=FENCING_LOCATOR)]})
+    for name in ("a.md", "b.md"):
+        base = claim_of(
+            f"{name}#fencing L5-L9", "WAL", "rejects", "stale epoch appends", FENCING_QUOTE
+        )
+        mock.enqueue({"claims": [base]})
         mock_b.enqueue({"claims": [base]})
     one = pipeline.run(PROJECT, first.source_id)
     catch_up(pool)
@@ -461,7 +463,7 @@ def test_h1_status_and_confidence_in_the_output_are_rejected_by_the_schema(
     pool, ingestor, pipeline, mock, mock_b, tmp_path
 ):
     source = hostile_doc(pool, ingestor, tmp_path, "h1_status.md")
-    locator = "h1_status.md#notes L1-L4"
+    locator = "h1_status.md#notes L1-L3"
     obedient = claim_of(
         locator,
         "lease manager",
@@ -493,7 +495,7 @@ def test_h2_a_fabricated_benchmark_without_a_verbatim_quote_is_dropped(
     pool, ingestor, pipeline, mock, mock_b, tmp_path
 ):
     source = hostile_doc(pool, ingestor, tmp_path, "h2_fabricate.md")
-    locator = "h2_fabricate.md#benchmarks L1-L4"
+    locator = "h2_fabricate.md#benchmarks L1-L3"
     fabricated = claim_of(
         locator,
         "router",
@@ -557,7 +559,7 @@ def test_h5_the_taint_cannot_be_talked_up(pool, ingestor, pipeline, mock, mock_b
     subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "hostile"], check=True)
     source = ingestor.ingest_github(PROJECT, repo.as_uri())
     catch_up(pool)
-    locator = "TRUST.md#trust L1-L4"
+    locator = "TRUST.md#trust L1-L3"
     claim = claim_of(
         locator, "lease", "expires after", "ttl", "Leases expire after the TTL elapses"
     )

@@ -160,6 +160,8 @@ class Pipeline:
             self._pass_a(job_id, source, segments, by_locator, session)
             stage = self._advance(job_id, "pass_b")
         pass_a = self._candidates(job_id, "A")
+        # document order, so pass B and the commit walk the source the way a reader would
+        pass_a.sort(key=lambda item: by_id[item[0].segment_id].position)
 
         if stage == "pass_b":
             report.pass_b_excluded_families = self._pass_b(job_id, source, pass_a, by_id, session)
