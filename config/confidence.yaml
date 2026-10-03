@@ -1,0 +1,16 @@
+# Confidence scoring function v1 (module M5). Declared here, never set by a model.
+# confidence = clamp(base[source_tier] + corroboration + agreement + verification, 0, 1) * recency_decay
+# Monotonic: more corroboration, agreement or verification never lowers it. Calibration against
+# labeled data comes in M14; until then these weights are a declared prior, not a measurement.
+version: 1
+base_by_source_tier:
+  user: 0.60
+  internal: 0.70
+  external_trusted: 0.60
+  external_untrusted: 0.40
+per_corroboration: 0.10         # each additional distinct source with the same claim
+max_corroboration: 0.30
+two_pass_agreement: 0.10        # both extraction passes derived the claim independently
+per_verification_event: 0.10    # each passing check or recorded experiment that references it
+max_verification: 0.20
+recency_decay: 1.0              # constant for now

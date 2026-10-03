@@ -1,0 +1,10 @@
+# Ingestion and extraction settings (module M5).
+sources:
+  max_file_bytes: 524288          # files larger than this are skipped (512 KiB)
+  skip_dirs: [vendor, node_modules, third_party, dist, build, .git]
+  trusted_domains: []             # hosts whose content is tainted external_trusted; empty = none
+extraction:
+  pass_a_tier: tier-cheap
+  pass_b_tier: tier-mid
+  pack_chars: 12000               # pass A packs segments into one call up to this many characters
+  max_segment_chars: 6000         # longer segments are truncated for the model (never for the quote check)
