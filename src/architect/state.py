@@ -85,18 +85,20 @@ class ArbiterState:
         ).fetchone()
         return row["head_version"] if row else None
 
-    def model_version_exists(self, version_id: str) -> bool:
-        return self._exists(
-            "SELECT 1 FROM arb_model_versions WHERE project_id = %s AND version_id = %s",
-            version_id,
-        )
-
-    def add_model_version(self, version_id: str) -> None:
-        """Record a committed model version and make it the project's head."""
-        self._cur.execute(
-            "INSERT INTO arb_model_versions (project_id, version_id) VALUES (%s, %s) "
-            "ON CONFLICT DO NOTHING",
+    def model(self, version_id: str) -> dict[str, Any] | None:
+        """The materialized model of a committed version, or None if there is no such version."""
+        row = self._cur.execute(
+            "SELECT model FROM arb_model_versions WHERE project_id = %s AND version_id = %s",
             (self._pid, version_id),
+        ).fetchone()
+        return row["model"] if row else None
+
+    def add_model_version(self, version_id: str, model: dict[str, Any]) -> None:
+        """Record a committed model version with its model and make it the project's head."""
+        self._cur.execute(
+            "INSERT INTO arb_model_versions (project_id, version_id, model) VALUES (%s, %s, %s) "
+            "ON CONFLICT (project_id, version_id) DO UPDATE SET model = EXCLUDED.model",
+            (self._pid, version_id, Jsonb(model)),
         )
         self._cur.execute(
             "INSERT INTO arb_model_heads (project_id, head_version) VALUES (%s, %s) "

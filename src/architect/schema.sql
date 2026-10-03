@@ -72,10 +72,13 @@ CREATE TABLE IF NOT EXISTS arb_model_heads (
     head_version text NOT NULL
 );
 
--- Every model version committed so far, by model.version_created or model.patch_committed.
+-- Every model version committed so far, by model.version_created or model.patch_committed,
+-- with its materialized System Model. The Arbiter applies each patch to the head's model
+-- before committing it, and a version created from a parent starts as the parent's model.
 CREATE TABLE IF NOT EXISTS arb_model_versions (
-    project_id text NOT NULL REFERENCES projects (project_id),
-    version_id text NOT NULL,
+    project_id text  NOT NULL REFERENCES projects (project_id),
+    version_id text  NOT NULL,
+    model      jsonb NOT NULL,
     PRIMARY KEY (project_id, version_id)
 );
 
