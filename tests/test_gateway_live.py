@@ -3,10 +3,12 @@
 Deselected by default (pyproject addopts `-m "not live"`). Run them yourself with the key in
 the shell, never in a file in the repo:
 
-    export ANTHROPIC_API_KEY=...        # PowerShell: $env:ANTHROPIC_API_KEY = "..."
+    export ARCHITECT_ANTHROPIC_API_KEY=...   # PowerShell: $env:ARCHITECT_ANTHROPIC_API_KEY = "..."
     pytest -m live -v
 
-L2 also needs OPENAI_COMPAT_BASE_URL (and OPENAI_COMPAT_API_KEY if the server wants one).
+The app reads ARCHITECT_ANTHROPIC_API_KEY first and falls back to ANTHROPIC_API_KEY. L2 also
+needs OPENAI_COMPAT_BASE_URL (and OPENAI_COMPAT_API_KEY if the server wants one); without the
+URL it is deselected.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import os
 
 import pytest
 
-from architect.gateway.config import load_config
+from architect.gateway.config import anthropic_api_key, load_config
 from architect.gateway.gateway import Gateway, default_providers
 from architect.gateway.request import GatewayRequest
 
@@ -44,8 +46,8 @@ def live_request(tier: str, **overrides):
 
 
 def test_l1_anthropic_tier_cheap_completion_and_structured_round_trip(pool):
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("set ANTHROPIC_API_KEY in the shell to run the live tests")
+    if not anthropic_api_key():
+        pytest.fail("set ARCHITECT_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) to run the live tests")
     gateway = Gateway(pool, load_config(), default_providers())
     plain = gateway.call(live_request("tier-cheap"))
     assert "Paris" in plain.text and plain.provider == "anthropic"
