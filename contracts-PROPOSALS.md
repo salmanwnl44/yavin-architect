@@ -112,3 +112,30 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 - **Proposal.** State in the README that a committed patch must apply (every target exists)
   and leave a valid system model, that proposals are held to the same rule, and that version
   ids are unique per project; have `replay.py` enforce the same.
+
+## P-9: CapacityParam has no `applies_to`
+
+**Status: open, for v1.1.**
+
+- **Problem.** `system_model.schema.json` gives `CapacityParam` an `id`, a `name`, a `value`
+  and a `unit`, but nothing that binds it to the element it describes. Checks C-005 and
+  C-006 need the capacity and availability of a specific component.
+- **Workaround.** By convention `name = "<element_id>.<metric>"`, with the metrics
+  `max_qps` (a throughput) and `availability` (a ratio). The convention lives in one
+  helper, `architect.checks.graph.capacity_param`; no check parses a name itself.
+- **Proposal.** An `applies_to` field (an element id) and a `metric` field on
+  `CapacityParam`, so the binding is data rather than a naming rule.
+
+## P-10: CheckResult names no model version
+
+**Status: open, for v1.1.**
+
+- **Problem.** `CheckResult` in `ledger_events.schema.json` has `result_id`, `check_id`,
+  `element_refs`, `status` and a free `evidence` object, but no field for the model version
+  the result judges. A result is only meaningful against one version.
+- **Workaround.** The runner writes `evidence.model_version` (with `as_of_seq`,
+  `catalog_version`, `check_version`, `params` and `inputs_hash`), and `proj_checks` keys a
+  result by `evidence.model_version` when it is present, else by the head of its time (the
+  fixture's own three results).
+- **Proposal.** A first-class `model_version` field on `CheckResult`, and `as_of_seq` with
+  it, so a result's subject is part of the contract.

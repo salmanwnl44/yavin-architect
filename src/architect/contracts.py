@@ -56,6 +56,7 @@ class Contracts:
     model_patch: Draft202012Validator
     objection: Draft202012Validator
     check: Draft202012Validator
+    catalog: Draft202012Validator
     event_types: tuple[str, ...]
     _event_branch: dict[str, int]
 
@@ -127,6 +128,7 @@ def load_contracts() -> Contracts:
         model_patch=validator("agent_protocol.schema.json", "/$defs/ModelPatchProposal"),
         objection=validator("agent_protocol.schema.json", "/$defs/Objection"),
         check=validator("check_catalog.schema.json", "/$defs/Check"),
+        catalog=validator("check_catalog.schema.json"),
         event_types=tuple(ledger["$defs"]["EventType"]["enum"]),
         _event_branch={
             branch["properties"]["type"]["const"]: i for i, branch in enumerate(ledger["oneOf"])

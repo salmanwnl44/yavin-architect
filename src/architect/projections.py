@@ -285,12 +285,19 @@ class _Fold:
 
     def check_result(self) -> None:
         p = self.payload
-        head = self.cur.execute(
-            "SELECT version_id FROM proj_model_versions WHERE project_id = %s "
-            "ORDER BY committed_at_seq DESC LIMIT 1",
-            (self.pid,),
-        ).fetchone()
         evidence = p.get("evidence")
+        # The v1.0 CheckResult has no model-version field (contracts-PROPOSALS.md P-10): the
+        # runner names the version in evidence.model_version; a result without it is taken to
+        # be about the head at the time.
+        named = evidence.get("model_version") if isinstance(evidence, dict) else None
+        if isinstance(named, str):
+            head = {"version_id": named}
+        else:
+            head = self.cur.execute(
+                "SELECT version_id FROM proj_model_versions WHERE project_id = %s "
+                "ORDER BY committed_at_seq DESC LIMIT 1",
+                (self.pid,),
+            ).fetchone()
         self.cur.execute(
             "INSERT INTO proj_checks (project_id, seq, result_id, check_id, status, "
             "element_refs, evidence, version_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",

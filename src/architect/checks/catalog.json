@@ -1,0 +1,136 @@
+{
+  "catalog_version": "1.0.0",
+  "checks": [
+    {
+      "id": "C-001",
+      "title": "Requirement coverage",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["requirement"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c001" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-002",
+      "title": "No orphan components",
+      "layer": "L0",
+      "severity": "major",
+      "applies_to": { "element_kinds": ["component"], "when": "component.kind != 'external'" },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c002" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-003",
+      "title": "Interface binding integrity",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["flow", "interface"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c003" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-004",
+      "title": "Requirement refs consistent with SATISFIES links",
+      "layer": "L0",
+      "severity": "major",
+      "applies_to": { "element_kinds": ["component"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c004" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-005",
+      "title": "Capacity headroom: downstream capacity >= peak x headroom, units checked",
+      "layer": "L1",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["component", "flow", "capacity_param"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c005" },
+      "params": { "headroom": 1.5 },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-006",
+      "title": "Availability composition over sync dependencies",
+      "layer": "L1",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["slo", "component", "capacity_param"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c006" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-007",
+      "title": "Stateful durability declared",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["component"], "when": "component.stateful == true" },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c007" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-008",
+      "title": "Trust-boundary crossings validated, encrypted and authenticated",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["flow", "trust_boundary"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c008" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-009",
+      "title": "No open load-bearing assumptions",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["assumption"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c009" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-010",
+      "title": "Single points of failure on the request path",
+      "layer": "L1",
+      "severity": "major",
+      "applies_to": { "element_kinds": ["component", "deployment_unit"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c010" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-011",
+      "title": "Idempotency for at-least-once delivery",
+      "layer": "L0",
+      "severity": "major",
+      "applies_to": { "element_kinds": ["interface"], "when": "interface.style in ('async', 'stream')" },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c011" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-012",
+      "title": "Backpressure on queues and fan-in",
+      "layer": "L0",
+      "severity": "major",
+      "applies_to": { "element_kinds": ["flow"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c012" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    },
+    {
+      "id": "C-013",
+      "title": "Referential integrity",
+      "layer": "L0",
+      "severity": "critical",
+      "applies_to": { "element_kinds": ["model"] },
+      "implementation": { "kind": "builtin", "ref": "architect.checks.c013" },
+      "version": 1,
+      "changelog": [{ "version": 1, "date": "2026-10-03", "change": "initial" }]
+    }
+  ]
+}
