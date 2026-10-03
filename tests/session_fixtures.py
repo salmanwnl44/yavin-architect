@@ -384,6 +384,25 @@ S3_GIVE_UP_STORY: Story = {
     ("repair", 3): [REPAIR_NOOP],
 }
 
+# P1: the round-1 repair is refused by the budget before it reaches the provider; after the
+# owner extends, the loop resumes in round 2 and that repair fixes both flaws.
+P1_EXTEND_STORY: Story = {
+    ("frame", 0): [FRAME],
+    ("draft", 1): [DRAFT_V1],
+    ("repair", 2): [REPAIR_FIX],
+}
+# P4: review mode. The seed replaces the draft, so the story has no draft at all: a draft
+# call would fail the scripted architect.
+P4_SEED_STORY: Story = {("frame", 0): [FRAME], ("repair", 1): [REPAIR_FIX]}
+
+
+def model_from_ops(ops: list[dict[str, Any]]) -> dict[str, Any]:
+    """A SystemModel document built by applying add ops to an empty model: a seed file."""
+    from architect.model_fold import apply_patch, empty_model
+
+    return apply_patch(empty_model("seed-project", "mv_SEEDFILE0001"), {"ops": ops})
+
+
 MARKER = re.compile(r"\[architect purpose=(\w+) round=(\d+)\]")
 
 
@@ -435,6 +454,93 @@ def make_activities(
     )
 
 
+class _Point:
+    """One synchronization point: an activity starting (optionally held there) or finishing."""
+
+    def __init__(self, kind: str, name: str, match: dict[str, Any], timeout: float) -> None:
+        self.kind, self.name, self.match, self.timeout = kind, name, match, timeout
+        self.used = False
+        self.reached = threading.Event()
+        self.released = threading.Event()
+
+    def matches(self, name: str, args: dict[str, Any]) -> bool:
+        return name == self.name and all(args.get(k) == v for k, v in self.match.items())
+
+    async def wait(self) -> None:
+        """Until the activity got here. Event-driven: no polling, no sleeps."""
+        reached = await asyncio.to_thread(self.reached.wait, self.timeout)
+        assert reached, f"the session never reached {self.kind} of {self.name} {self.match}"
+
+    def release(self) -> None:
+        self.released.set()
+
+
+class ActivityGate:
+    """Deterministic synchronization with a running session through the activities' hooks.
+
+    `hold(name, **match)` blocks the first matching activity at its start until `release()`:
+    the workflow is then provably between two step boundaries, and a signal sent meanwhile
+    is in its history before the activity's result. `on_start` and `on_finish` only tell.
+    Each point is used once, in registration order, so two pauses can be told apart. The
+    worker thread sets a threading.Event; the test awaits it, so nothing depends on timing.
+    """
+
+    def __init__(self, activities: SessionActivities, timeout: float = 120.0) -> None:
+        self.started: list[tuple[str, dict[str, Any]]] = []
+        self._points: list[_Point] = []
+        self._lock = threading.Lock()
+        self._timeout = timeout
+        activities.before_activity = self._before
+        activities.after_activity = self._after
+
+    def _point(self, kind: str, name: str, match: dict[str, Any]) -> _Point:
+        point = _Point(kind, name, match, self._timeout)
+        with self._lock:
+            self._points.append(point)
+        return point
+
+    def hold(self, name: str, **match: Any) -> _Point:
+        return self._point("hold", name, match)
+
+    def on_start(self, name: str, **match: Any) -> _Point:
+        return self._point("start", name, match)
+
+    def on_finish(self, name: str, **match: Any) -> _Point:
+        return self._point("finish", name, match)
+
+    def names(self) -> list[str]:
+        with self._lock:
+            return [name for name, _ in self.started]
+
+    def release_all(self) -> None:
+        with self._lock:
+            for point in self._points:
+                point.released.set()
+
+    def _take(self, kinds: tuple[str, ...], name: str, args: dict[str, Any]) -> list[_Point]:
+        taken: list[_Point] = []
+        with self._lock:
+            for kind in kinds:
+                for point in self._points:
+                    if point.kind == kind and not point.used and point.matches(name, args):
+                        point.used = True
+                        taken.append(point)
+                        break
+        return taken
+
+    def _before(self, name: str, args: dict[str, Any]) -> None:
+        with self._lock:
+            self.started.append((name, args))
+        for point in self._take(("start", "hold"), name, args):
+            point.reached.set()
+            if point.kind == "hold" and not point.released.wait(self._timeout):
+                raise RuntimeError(f"{name} was held for more than {self._timeout}s")
+
+    def _after(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
+        for point in self._take(("finish",), name, args):
+            point.reached.set()
+
+
 def session_input(
     project_id: str,
     *,
@@ -443,6 +549,7 @@ def session_input(
     session_id: str = SESSION_ID,
     brief: str = BRIEF,
     config: SessionConfig | None = None,
+    seed: dict[str, Any] | None = None,
 ) -> SessionInput:
     return build_input(
         config or test_session_config(),
@@ -450,6 +557,7 @@ def session_input(
         brief=brief,
         preset=preset,
         overrides=overrides,
+        seed=seed,
         session_id=session_id,
         started_at=STARTED_AT,
     )
@@ -477,11 +585,23 @@ async def wait_for(
         await asyncio.sleep(interval)
 
 
-FINAL = ("approved", "rejected", "stopped_budget", "stopped_time", "cancelled", "failed")
+FINAL = ("approved", "approved_with_risks", "rejected", "cancelled", "failed")
 
 
 def is_final_or_awaiting(view: dict[str, Any]) -> bool:
     return view["status"] in FINAL or view["status"] == "awaiting_approval"
+
+
+async def decide_at_gate(handle: WorkflowHandle, decide: str, view: dict[str, Any]) -> None:
+    """Send a decision to an open gate. `auto` approves an ALLOWED package and rejects any
+    other (it never signs a waiver). A decision the workflow refuses is an error here, not a
+    hang: the query after the signal sees the refusal."""
+    if decide == "auto":
+        decide = "approve" if view.get("gate_verdict") == "ALLOWED" else "reject"
+    await handle.signal(decide)
+    after = await handle.query("status")
+    if after["refusals"] > view["refusals"]:
+        raise AssertionError(f"{decide} was refused: {after['last_refusal']}")
 
 
 async def run_to_end(
@@ -492,13 +612,13 @@ async def run_to_end(
     decide: str | None = "approve",
     task_queue: str = TASK_QUEUE,
 ) -> dict[str, Any]:
-    """Run one session on a worker until it waits for the owner or ends, optionally decide,
-    and return the workflow's final view."""
+    """Run one session on a worker until it waits for the owner or ends, optionally decide
+    (`approve`, `reject` or `auto`), and return the workflow's final view."""
     async with build_worker(client, task_queue=task_queue, activities=activities):
         handle = await start(client, input, task_queue)
         view = await wait_for(handle, is_final_or_awaiting)
         if view["status"] == "awaiting_approval" and decide is not None:
-            await handle.signal(decide)
+            await decide_at_gate(handle, decide, view)
         return await result_of(handle)
 
 

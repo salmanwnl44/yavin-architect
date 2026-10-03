@@ -199,22 +199,33 @@ def _claims_with_sources(
             "subject": claim["subject"],
             "predicate": claim["predicate"],
             "object": claim["object"],
+            # each source with the locator the claim cites in it (M7: `architect why`)
             "sources": [
                 sources.get(e["source"], {"source_id": e["source"]})
+                | {"span": e.get("span"), "evidence_kind": e.get("kind")}
                 for e in claim.get("evidence", [])
             ],
         }
     return out
 
 
-def why(pool: ConnectionPool, project_id: str, element_id: str) -> Row | None:
-    """The §11 trace for an element of the head model.
+def why(
+    pool: ConnectionPool, project_id: str, element_id: str, version_id: str | None = None
+) -> Row | None:
+    """The §11 trace for an element of the head model, or of `version_id` when given.
 
     element -> the requirements it SATISFIES (and the claims stating them) -> the decisions
     that affect it -> their evidence claims -> the sources behind those claims.
     """
     with _snapshot(pool) as conn:
-        head = _head(conn, project_id)
+        if version_id is None:
+            head = _head(conn, project_id)
+        else:
+            head = conn.execute(
+                "SELECT version_id, parent_version, committed_at_seq, model "
+                "FROM proj_model_versions WHERE project_id = %s AND version_id = %s",
+                (project_id, version_id),
+            ).fetchone()
         if head is None:
             return None
         found = [

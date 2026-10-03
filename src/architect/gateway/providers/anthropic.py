@@ -1,5 +1,6 @@
-"""The Anthropic provider, on the official SDK. The key comes from ANTHROPIC_API_KEY (or the
-SDK's other credential sources) and is never stored, logged or raised."""
+"""The Anthropic provider, on the official SDK. The key comes from ARCHITECT_ANTHROPIC_API_KEY,
+falling back to ANTHROPIC_API_KEY (then to the SDK's other credential sources), and is never
+stored, logged or raised."""
 
 from __future__ import annotations
 
@@ -8,6 +9,7 @@ from typing import Any
 
 import anthropic
 
+from architect.gateway.config import anthropic_api_key
 from architect.gateway.errors import ProviderError
 from architect.gateway.providers.base import ProviderCall, ProviderResult
 
@@ -19,7 +21,8 @@ class AnthropicProvider:
 
     def __init__(self, client: anthropic.Anthropic | None = None) -> None:
         # The SDK's own retries are off: the gateway owns backoff, fallback and recording.
-        self._client = client or anthropic.Anthropic(max_retries=0)
+        # api_key=None leaves the SDK to its own credential resolution, as before.
+        self._client = client or anthropic.Anthropic(api_key=anthropic_api_key(), max_retries=0)
 
     def complete(self, call: ProviderCall) -> ProviderResult:
         kwargs: dict[str, Any] = {

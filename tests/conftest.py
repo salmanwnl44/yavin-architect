@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -21,6 +22,27 @@ from architect.db import database_url, ensure_schema, open_pool
 from architect.state import STATE_TABLES
 
 PROJECT = "p1"
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Tests marked live_openai_compat need a server only some machines have. Without
+    OPENAI_COMPAT_BASE_URL they are deselected (reported as deselected: not failed, not
+    skipped), also under `pytest -m live`."""
+    if os.environ.get("OPENAI_COMPAT_BASE_URL"):
+        return
+    unconfigured = [item for item in items if item.get_closest_marker("live_openai_compat")]
+    if unconfigured:
+        config.hook.pytest_deselected(items=unconfigured)
+        items[:] = [item for item in items if item not in unconfigured]
+
+
+@pytest.fixture(autouse=True)
+def _no_app_key_outside_live_tests(request: pytest.FixtureRequest, monkeypatch) -> None:
+    """A real ARCHITECT_ANTHROPIC_API_KEY in the developer's shell must never reach a test that
+    is not marked live: the default gateway would register the real provider and spend money.
+    Tests that need the variable set it themselves."""
+    if "live" not in request.keywords:
+        monkeypatch.delenv("ARCHITECT_ANTHROPIC_API_KEY", raising=False)
 
 
 @pytest.fixture(scope="session")

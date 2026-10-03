@@ -11,6 +11,19 @@ import yaml
 
 CONFIG_ENV = "ARCHITECT_MODELS_CONFIG"
 OPENAI_COMPAT_URL_ENV = "OPENAI_COMPAT_BASE_URL"
+# The app's own variable first, so a tool sharing the shell that uses ANTHROPIC_API_KEY for
+# its own auth never picks the app's key up; the conventional name is the fallback.
+ANTHROPIC_KEY_ENVS = ("ARCHITECT_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+
+
+def anthropic_api_key() -> str | None:
+    """The Anthropic key from the environment, or None. Handed straight to the SDK client:
+    never stored, logged or raised."""
+    for name in ANTHROPIC_KEY_ENVS:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return None
 
 
 @dataclass(frozen=True)

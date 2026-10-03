@@ -48,6 +48,41 @@ class LintResult:
     reason: str  # why it is or is not measurable, for the open risk
 
 
+# a requirement the brief labels itself: "- [peak-ingest] The pipeline must sustain ..."
+LABELLED = re.compile(r"^[ 	]*[-*][ 	]*\[([a-z0-9][a-z0-9-]*)\][ 	]*(.+?)[ 	]*$", re.M)
+
+
+def labelled_requirements(brief: str) -> dict[str, str]:
+    """label -> the line's text, for every list item of the brief that starts with a slug
+    in square brackets. The owner fixes a requirement's id this way, so a seed model and
+    its SATISFIES links can refer to it before any session has run."""
+    return {label: text for label, text in LABELLED.findall(brief)}
+
+
+def label_for(requirement: dict[str, Any], labels: dict[str, str]) -> str | None:
+    """The brief's own label for a requirement the Architect returned: the one whose line
+    contains the requirement's quote or text (or the other way round), or the slug itself
+    when it is a label. The pipeline decides the id, not the model."""
+    if not labels:
+        return None
+
+    def squash(text: str) -> str:
+        return " ".join(text.split()).casefold()
+
+    given = str(requirement.get("slug") or "")
+    if given in labels:
+        return given
+    for candidate in (requirement.get("quote"), requirement.get("text")):
+        needle = squash(str(candidate or ""))
+        if not needle:
+            continue
+        for label, line in labels.items():
+            hay = squash(line)
+            if needle in hay or hay in needle:
+                return label
+    return None
+
+
 def requirement_id(slug_or_text: str) -> str:
     """`req_<slug>`: the subject id of the requirement claim and the target of SATISFIES links."""
     return f"req_{slug(slug_or_text)}"

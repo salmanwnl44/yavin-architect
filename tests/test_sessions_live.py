@@ -1,8 +1,8 @@
 """L4: a real quick session on a tiny brief with the real gateway and a small token cap.
 Manual, deselected in CI.
 
-Set ANTHROPIC_API_KEY in the shell (and ARCHITECT_TEMPORAL_ADDRESS when a dev server is
-already running; otherwise the SDK starts one), then:
+Set ARCHITECT_ANTHROPIC_API_KEY in the shell (and ARCHITECT_TEMPORAL_ADDRESS when a dev server
+is already running; otherwise the SDK starts one), then:
 
     pytest -m live -v -k l4
 
@@ -12,12 +12,11 @@ It prints the timeline summary, the gate, the open risks and the usd spent.
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Any
 
 import pytest
 
-from architect.gateway.config import load_config
+from architect.gateway.config import anthropic_api_key, load_config
 from architect.gateway.gateway import Gateway, default_providers
 from architect.ingestion.objectstore import LocalObjectStore
 from architect.sessions.activities import SessionActivities
@@ -36,8 +35,8 @@ latency p99 < 50 ms; sustain 500 req/s at peak; no stored mapping may be lost.
 
 
 def test_l4_a_real_quick_session(pool, tmp_path, capsys):
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.fail("set ANTHROPIC_API_KEY in the shell to run the live tests")
+    if not anthropic_api_key():
+        pytest.fail("set ARCHITECT_ANTHROPIC_API_KEY (or ANTHROPIC_API_KEY) to run the live tests")
     create_project(pool, PROJECT)
     gateway = Gateway(pool, load_config(), default_providers())
     store = LocalObjectStore(tmp_path / "objects")
@@ -53,7 +52,10 @@ def test_l4_a_real_quick_session(pool, tmp_path, capsys):
 
     async def body() -> dict[str, Any]:
         async with dev_server() as client:
-            return await run_to_end(client, activities, session, task_queue="architect-live")
+            # at the end gate: approve an ALLOWED package, reject any other (never a waiver)
+            return await run_to_end(
+                client, activities, session, task_queue="architect-live", decide="auto"
+            )
 
     final = asyncio.run(body())
     package = load_package(store, final["package_key"]) if final["package_key"] else {}
@@ -66,5 +68,12 @@ def test_l4_a_real_quick_session(pool, tmp_path, capsys):
         print(f"gate: {gate.get('verdict')} {[r.get('check_id') for r in gate.get('reasons', [])]}")
         print("open risks:", [r["id"] for r in package.get("open_risks", [])])
         print(f"usd: {final['spend']['usd']:.4f} tokens: {final['spend']['tokens']}")
-    assert final["status"] in ("approved", "stopped_budget", "stopped_time")
+    # every outcome now ends at the human gate with its package (M7); `auto` closed it
+    assert final["status"] in ("approved", "rejected")
+    assert final["outcome"] in (
+        "completed",
+        "completed_with_risks",
+        "stopped_budget",
+        "stopped_time",
+    )
     assert final["package_key"]

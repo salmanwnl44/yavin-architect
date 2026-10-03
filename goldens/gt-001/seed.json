@@ -1,0 +1,273 @@
+{
+  "version_id": "mv_GT001SEED00",
+  "project_id": "gt-001",
+  "elements": {
+    "components": [
+      {
+        "id": "cmp_CLIENT00001",
+        "name": "External clients",
+        "kind": "external",
+        "stateful": false,
+        "requirement_refs": []
+      },
+      {
+        "id": "cmp_GATEWAY0001",
+        "name": "API gateway",
+        "kind": "gateway",
+        "stateful": false,
+        "interfaces": [
+          "if_INGEST00001"
+        ],
+        "deployment_unit": "du-gateway",
+        "requirement_refs": [
+          "req_peak-ingest",
+          "req_ingest-latency",
+          "req_tenant-isolation"
+        ]
+      },
+      {
+        "id": "cmp_QUEUE000001",
+        "name": "Event queue",
+        "kind": "queue",
+        "stateful": true,
+        "durability_class": "durable",
+        "recovery": {
+          "rpo_s": 0,
+          "rto_s": 30,
+          "path": "replicated log with leader election"
+        },
+        "interfaces": [
+          "if_ENQUEUE0001"
+        ],
+        "deployment_unit": "du-queue",
+        "requirement_refs": [
+          "req_no-loss"
+        ]
+      },
+      {
+        "id": "cmp_WORKERS0001",
+        "name": "Worker pool",
+        "kind": "service",
+        "stateful": true,
+        "durability_class": "durable",
+        "interfaces": [
+          "if_CONSUME0001"
+        ],
+        "deployment_unit": "du-workers",
+        "requirement_refs": [
+          "req_peak-ingest",
+          "req_robust"
+        ]
+      },
+      {
+        "id": "cmp_STORE000001",
+        "name": "Event datastore",
+        "kind": "datastore",
+        "stateful": true,
+        "durability_class": "durable",
+        "recovery": {
+          "rpo_s": 0,
+          "rto_s": 60,
+          "path": "promote the synchronous replica"
+        },
+        "interfaces": [
+          "if_STORE000001"
+        ],
+        "deployment_unit": "du-store",
+        "requirement_refs": [
+          "req_no-loss",
+          "req_tenant-isolation"
+        ]
+      }
+    ],
+    "interfaces": [
+      {
+        "id": "if_INGEST00001",
+        "contract_ref": "openapi:ingest-api#/paths/~1v1~1events",
+        "style": "sync",
+        "idempotent": true,
+        "authn": "api_key"
+      },
+      {
+        "id": "if_ENQUEUE0001",
+        "contract_ref": "asyncapi:events-topic#/channels/events",
+        "style": "async",
+        "idempotent": true,
+        "authn": "service_identity"
+      },
+      {
+        "id": "if_CONSUME0001",
+        "contract_ref": "asyncapi:events-topic#/channels/events",
+        "style": "async",
+        "idempotent": true,
+        "authn": "service_identity"
+      },
+      {
+        "id": "if_STORE000001",
+        "contract_ref": "proto:store.v1.EventStore/Append",
+        "style": "sync",
+        "idempotent": true,
+        "authn": "mtls"
+      }
+    ],
+    "flows": [
+      {
+        "id": "flw_INGEST00001",
+        "from": "cmp_CLIENT00001",
+        "to": "cmp_GATEWAY0001",
+        "via_interface": "if_INGEST00001",
+        "data_class": "internal",
+        "rate": {
+          "peak_qps": 1500,
+          "payload_bytes": 2048
+        },
+        "encryption_in_transit": true
+      },
+      {
+        "id": "flw_ENQUEUE0001",
+        "from": "cmp_GATEWAY0001",
+        "to": "cmp_QUEUE000001",
+        "via_interface": "if_ENQUEUE0001",
+        "data_class": "internal",
+        "rate": {
+          "peak_qps": 1500,
+          "payload_bytes": 2048
+        },
+        "encryption_in_transit": true
+      },
+      {
+        "id": "flw_CONSUME0001",
+        "from": "cmp_QUEUE000001",
+        "to": "cmp_WORKERS0001",
+        "via_interface": "if_CONSUME0001",
+        "data_class": "internal",
+        "rate": {
+          "peak_qps": 1500,
+          "payload_bytes": 2048
+        },
+        "encryption_in_transit": true,
+        "backpressure_ref": "consumer-prefetch-limit"
+      },
+      {
+        "id": "flw_WRITE000001",
+        "from": "cmp_WORKERS0001",
+        "to": "cmp_STORE000001",
+        "via_interface": "if_STORE000001",
+        "data_class": "internal",
+        "rate": {
+          "peak_qps": 1500,
+          "payload_bytes": 2048
+        },
+        "encryption_in_transit": true
+      }
+    ],
+    "capacity_params": [
+      {
+        "id": "cap-gateway-max-qps",
+        "name": "gateway max throughput",
+        "value": 4000,
+        "unit": "qps",
+        "applies_to": "cmp_GATEWAY0001",
+        "metric": "max_qps"
+      },
+      {
+        "id": "cap-queue-max-qps",
+        "name": "queue max throughput",
+        "value": 6000,
+        "unit": "qps",
+        "applies_to": "cmp_QUEUE000001",
+        "metric": "max_qps"
+      },
+      {
+        "id": "cap-workers-max-qps",
+        "name": "workers max throughput",
+        "value": 3000,
+        "unit": "qps",
+        "applies_to": "cmp_WORKERS0001",
+        "metric": "max_qps"
+      },
+      {
+        "id": "cap-store-max-qps",
+        "name": "store max throughput",
+        "value": 2000,
+        "unit": "qps",
+        "applies_to": "cmp_STORE000001",
+        "metric": "max_qps"
+      }
+    ],
+    "deployment_units": [
+      {
+        "id": "du-gateway",
+        "name": "gateway pods",
+        "runtime": "k8s",
+        "replicas": 3
+      },
+      {
+        "id": "du-queue",
+        "name": "queue brokers",
+        "runtime": "k8s",
+        "replicas": 3
+      },
+      {
+        "id": "du-workers",
+        "name": "worker pods",
+        "runtime": "k8s",
+        "replicas": 4
+      },
+      {
+        "id": "du-store",
+        "name": "datastore replicas",
+        "runtime": "k8s",
+        "replicas": 3
+      }
+    ],
+    "trust_boundaries": [
+      {
+        "id": "tb-cluster",
+        "name": "Cluster",
+        "member_elements": [
+          "cmp_GATEWAY0001",
+          "cmp_QUEUE000001",
+          "cmp_WORKERS0001",
+          "cmp_STORE000001"
+        ]
+      }
+    ]
+  },
+  "links": {
+    "satisfies": [
+      {
+        "component": "cmp_GATEWAY0001",
+        "requirement": "req_peak-ingest"
+      },
+      {
+        "component": "cmp_GATEWAY0001",
+        "requirement": "req_ingest-latency"
+      },
+      {
+        "component": "cmp_GATEWAY0001",
+        "requirement": "req_tenant-isolation"
+      },
+      {
+        "component": "cmp_QUEUE000001",
+        "requirement": "req_no-loss"
+      },
+      {
+        "component": "cmp_WORKERS0001",
+        "requirement": "req_peak-ingest"
+      },
+      {
+        "component": "cmp_WORKERS0001",
+        "requirement": "req_robust"
+      },
+      {
+        "component": "cmp_STORE000001",
+        "requirement": "req_no-loss"
+      },
+      {
+        "component": "cmp_STORE000001",
+        "requirement": "req_tenant-isolation"
+      }
+    ]
+  }
+}

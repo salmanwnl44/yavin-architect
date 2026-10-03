@@ -230,3 +230,42 @@ def test_anthropic_timeouts_are_retryable():
     with pytest.raises(ProviderError) as error:
         AnthropicProvider(client).complete(call())
     assert error.value.retryable is True
+
+
+# --- the key's variable name (M7): the app's own name first, the conventional one as fallback
+
+APP_KEY = "sk-ant-fake-app-key-for-the-variable-name-test"
+SHELL_KEY = "sk-ant-fake-shell-key-for-the-variable-name-test"
+
+
+def test_anthropic_key_comes_from_the_app_variable_before_the_conventional_one(monkeypatch):
+    from architect.gateway.config import ANTHROPIC_KEY_ENVS, anthropic_api_key
+
+    assert ANTHROPIC_KEY_ENVS == ("ARCHITECT_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+    monkeypatch.delenv("ARCHITECT_ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert anthropic_api_key() is None
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", SHELL_KEY)
+    assert anthropic_api_key() == SHELL_KEY, "the conventional name is the fallback"
+    assert AnthropicProvider()._client.api_key == SHELL_KEY
+
+    monkeypatch.setenv("ARCHITECT_ANTHROPIC_API_KEY", APP_KEY)
+    assert anthropic_api_key() == APP_KEY, "the app's own name wins"
+    assert AnthropicProvider()._client.api_key == APP_KEY
+
+    monkeypatch.setenv("ARCHITECT_ANTHROPIC_API_KEY", "")
+    assert anthropic_api_key() == SHELL_KEY, "an empty app variable does not shadow the fallback"
+
+
+@pytest.mark.parametrize("name", ["ARCHITECT_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"])
+def test_default_providers_registers_anthropic_for_either_key_name(monkeypatch, name):
+    from architect.gateway.gateway import default_providers
+
+    for variable in ("ARCHITECT_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_COMPAT_BASE_URL"):
+        monkeypatch.delenv(variable, raising=False)
+    assert set(default_providers()) == {"mock"}
+    monkeypatch.setenv(name, APP_KEY)
+    providers = default_providers()
+    assert set(providers) == {"mock", "anthropic"}
+    assert providers["anthropic"]._client.api_key == APP_KEY

@@ -1,0 +1,41 @@
+{
+  "rationale": "backpressure on the enqueue path, validation at the boundary, a recovery path for the workers, and datastore capacity above the required headroom",
+  "ops": [
+    {
+      "op": "update_element",
+      "element_type": "flows",
+      "element_id": "flw_ENQUEUE0001",
+      "element": {
+        "backpressure_ref": "gateway-returns-429-above-queue-depth"
+      }
+    },
+    {
+      "op": "update_element",
+      "element_type": "flows",
+      "element_id": "flw_INGEST00001",
+      "element": {
+        "input_validation": "jsonschema:event.v1"
+      }
+    },
+    {
+      "op": "update_element",
+      "element_type": "components",
+      "element_id": "cmp_WORKERS0001",
+      "element": {
+        "recovery": {
+          "rpo_s": 0,
+          "rto_s": 60,
+          "path": "replay from the committed queue offset"
+        }
+      }
+    },
+    {
+      "op": "update_element",
+      "element_type": "capacity_params",
+      "element_id": "cap-store-max-qps",
+      "element": {
+        "value": 3000
+      }
+    }
+  ]
+}

@@ -68,6 +68,13 @@ Do not change the contracts.
     Arbiter decides; its rejections go back to the agent as structured errors for a bounded
     retry. Every agent message is a typed protocol message in the append-only `ag_messages`.
     Waivers are human-only: the Architect may only request one, as an open risk.
+12. **Signals record; the workflow decides when they apply.** A signal handler only writes to
+    workflow state (a flag or a buffer). The run consumes it at a well-defined point: a step
+    boundary, the loop's exit, or a human gate. A signal is never lost and never applied
+    twice, and one that cannot apply (a decision while no gate is open, `approve` on a
+    BLOCKED package, `approve_with_risks` without a reason) is refused with a recorded
+    reason. Every outcome but `cancelled` ends at a human gate with its package.
+    `approve_with_risks` is the only path that signs a waiver, and it signs as the human.
 
 ## Layout
 
@@ -98,6 +105,15 @@ Do not change the contracts.
   messages, `ag_messages`); `compiler.py` the Context Compiler; `linter.py` the requirement
   linter; `worker.py` the Temporal worker; `service.py` the client side (start, signal,
   query, the `ses_sessions` read model); `config/presets.yaml` the presets.
+- `src/architect/console.py`: the session snapshot and its pure rendering (`session watch`),
+  and the why-trace formatter. `src/architect/modeldiff.py`: the structural diff between two
+  model versions, pure.
+- `src/architect/golden/`: the golden runner (`runner.py`, a session with the worker in its
+  own process), its worker process (`worker.py`), the scripted architect for mock mode
+  (`scripted.py`) and the scorecard (`scorecard.py`). `goldens/` at the repo root holds the
+  tasks (`gt-001/`: brief, seed model, answer key, mock outputs), the scorecard schema and
+  `results/` for live scorecards.
+- `docs/getting-started.md`: how to run all of it, on Windows without Docker and on Linux.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -110,6 +126,7 @@ ruff check .
 pytest
 docker compose --profile sessions up -d  # Temporal dev server for sessions; then:
 architect worker                         # the session worker (ARCHITECT_TEMPORAL_ADDRESS)
+architect golden run gt-001 --mode review --kill-after attack   # mock; add --live for the real gateway
 ```
 
 The session tests run on Temporal's time-skipping test environment (downloaded on first
@@ -117,7 +134,8 @@ use); two of them need a real dev server and start one themselves unless
 `ARCHITECT_TEMPORAL_ADDRESS` names one, as CI does.
 
 Live provider tests are marked `live` and deselected by default; `pytest -m live -v` with a
-key in the shell runs them.
+key in the shell runs them. The app reads its key from `ARCHITECT_ANTHROPIC_API_KEY`, falling
+back to `ANTHROPIC_API_KEY`.
 
 Tests create a throwaway schema per test inside the database named by
 `ARCHITECT_DATABASE_URL` (default `postgresql://architect:architect@localhost:5432/architect`).
@@ -134,6 +152,11 @@ Tests create a throwaway schema per test inside the database named by
 - After a PR merges, delete its remote branch — don't ask.
 - Adding an activity means: an idempotency scheme derived from (session, phase, round, step),
   a result the workflow can act on without I/O, and a test in which it is retried or replayed.
+- A flaky test is a defect, in the test or in the code. Reproduce it in a loop with the
+  assertion output kept, fix the root cause, and prove the fix with 100 consecutive green
+  iterations. A session test waits on activity events (`session_fixtures.ActivityGate`) or
+  on a state that holds until the test acts; it never waits on a transient state and never
+  sleeps to see what happens.
 - Out of scope until their milestone: the alternatives tournament (K > 1, M11), AI adversaries
   (M10), web research and the web and arXiv connectors, entity resolution beyond exact slugs,
   a graph database, vector search, UI, auth, multi-tenancy.

@@ -54,14 +54,31 @@ ACTIVITY_NAMES = (
     "frame",
     "research",
     "genesis",
+    "seed",
     "draft",
     "attack",
     "repair",
     "steer",
     "checkpoint",
     "package",
+    "sign_waivers",
+    "extend_budget",
     "record_status",
 )
+
+
+def seed_ops(seed: Any) -> list[dict[str, Any]]:
+    """A SystemModel as the patch that builds it on an empty model: one add_element per
+    element, one add_link per link, in the seed's own order. The seed's version_id and
+    project_id are ignored: the session's apply."""
+    ops: list[dict[str, Any]] = []
+    for element_type, elements in (seed.get("elements") or {}).items():
+        for element in elements:
+            ops.append({"op": "add_element", "element_type": element_type, "element": element})
+    for link_type, links in (seed.get("links") or {}).items():
+        for link in links:
+            ops.append({"op": "add_link", "link_type": link_type, "link": link})
+    return ops
 
 
 class _BudgetStop(Exception):
@@ -378,7 +395,11 @@ class SessionActivities:
 
         requirements: list[dict[str, Any]] = []
         risks: list[dict[str, Any]] = []
+        labels = linter.labelled_requirements(brief)
         for n, requirement in enumerate(parsed["requirements"]):
+            label = linter.label_for(requirement, labels)
+            if label is not None:  # the brief's own id for this requirement wins
+                requirement = {**requirement, "slug": label}
             result = linter.lint(requirement)
             if result.measurable:
                 obj = {"entity_type": "metric", "id": slug(result.metric or "metric")}
@@ -547,6 +568,54 @@ class SessionActivities:
         )
         self._catch_up(project_id)
         return {"version_id": version_id, "parent": payload.get("parent")}
+
+    # ------------------------------------------------------------------ seed (review mode)
+    def _seed(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Commit the seed model as the first patch after genesis, through the Arbiter like
+        any other patch. A seed the Arbiter refuses ends the session as failed, with the
+        typed rejection as the reason."""
+        project_id, session_id = args["project_id"], args["session_id"]
+        head: str = args["head_version"]
+        seed = args["seed"]
+        version_id = typed_id("mv", session_id, "seed")
+        try:
+            if not isinstance(seed, dict) or not isinstance(seed.get("elements", {}), dict):
+                raise Rejection("SCHEMA_INVALID", "the seed is not a SystemModel object", "$")
+            if not isinstance(seed.get("links", {}), dict):
+                raise Rejection("SCHEMA_INVALID", "the seed's links are not an object", "$.links")
+            body = {
+                "base_version": head,
+                "ops": seed_ops(seed),
+                "rationale": "seed model supplied at session start (review mode)",
+            }
+            proposal_id = f"prp-{session_id}-seed"
+            self._event(
+                project_id,
+                session_id,
+                "model.patch_proposed",
+                {"proposal_id": proposal_id, "base_version": head, "patch": body},
+                f"session:{session_id}:seed:proposed",
+            )
+            self._event(
+                project_id,
+                session_id,
+                "model.patch_committed",
+                {
+                    "version_id": version_id,
+                    "base_version": head,
+                    "patch": body,
+                    "from_proposal": proposal_id,
+                },
+                f"session:{session_id}:seed:committed",
+            )
+        except Rejection as rejection:
+            raise ApplicationError(
+                "the seed model was refused: " + json.dumps(rejection.body(), sort_keys=True),
+                type=SESSION_FAILURE,
+                non_retryable=True,
+            ) from rejection
+        self._catch_up(project_id)
+        return {"version_id": version_id, "ops": len(body["ops"])}
 
     # ------------------------------------------------------------------ draft / repair
     def _draft(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1012,6 +1081,8 @@ class SessionActivities:
             "requirement_trace": trace,
             "open_risks": risks,
             "waiver_requests": args.get("waiver_requests", []),
+            "steer_claims": args.get("steer_claims", []),
+            "extensions": args.get("extensions", 0),
             "adrs": adrs,
             "rounds": args.get("rounds", []),
             "spend": spend,
@@ -1028,12 +1099,95 @@ class SessionActivities:
             outcome=args["outcome"],
             spend=spend,
         )
-        return {"package_key": key, "open_risks": risks, "spend": spend}
+        verdict = gate["verdict"] if gate else None
+        self._update_row(project_id, session_id, gate_verdict=verdict)
+        return {
+            "package_key": key,
+            "open_risks": risks,
+            "spend": spend,
+            "gate_verdict": verdict,
+            "blocking": gate["reasons"] if gate else [],
+        }
+
+    # ------------------------------------------------------------------ the human's decisions
+    def _sign_waivers(self, args: dict[str, Any]) -> dict[str, Any]:
+        """approve_with_risks: one waiver.signed per open blocking reason, signed by the human
+        who decided (the Arbiter refuses any other actor kind), with their reason as the risk."""
+        project_id, session_id = args["project_id"], args["session_id"]
+        signer = args.get("signer") or "owner"
+        waivers: list[dict[str, Any]] = []
+        for reason in args.get("blocking", []):
+            target = reason.get("check_id") or reason.get("objection_id")
+            if not target:
+                continue
+            waiver_id = typed_id("wvr", session_id, str(args["n"]), target)
+            self._event(
+                project_id,
+                session_id,
+                "waiver.signed",
+                {
+                    "waiver_id": waiver_id,
+                    "target_ref": target,
+                    "risk": args["reason"],
+                    "signer": signer,
+                },
+                f"session:{session_id}:waiver:{args['n']}:{target}",
+                actor={"kind": "human", "id": signer},
+            )
+            waivers.append({"waiver_id": waiver_id, "target_ref": target})
+        self._update_row(project_id, session_id, waivers=waivers)
+        self._catch_up(project_id)
+        return {"waivers": waivers}
+
+    def _extend_budget(self, args: dict[str, Any]) -> dict[str, Any]:
+        """extend: a new budget.updated with the raised limits, signed by the human, and, when
+        the best version so far is not the head, a new head created from it so the loop
+        resumes from the best."""
+        project_id, session_id, n = args["project_id"], args["session_id"], args["n"]
+        signer = args.get("signer") or "owner"
+        limits = args["new_limits"]
+        tokens = limits.get("tokens")
+        self._event(
+            project_id,
+            session_id,
+            "budget.updated",
+            {
+                "scope": {"session": session_id},
+                "limits": {
+                    "tokens": None if tokens is None else int(tokens),
+                    "usd": limits.get("usd"),
+                    "wall_clock_minutes": int(limits["wall_clock_minutes"]),
+                },
+            },
+            f"session:{session_id}:budget:extend:{n}",
+            actor={"kind": "human", "id": signer},
+        )
+        head, best = args.get("head_version"), args.get("best_version")
+        if best and head and best != head:
+            head = typed_id("mv", session_id, "extend", str(n))
+            self._event(
+                project_id,
+                session_id,
+                "model.version_created",
+                {"version_id": head, "parent": best},
+                f"session:{session_id}:extend:{n}:from-best",
+            )
+        self._update_row(project_id, session_id, limits=limits, status="running", outcome=None)
+        self._catch_up(project_id)
+        return {"head_version": head, "spend": self._spend(session_id)}
 
     # ------------------------------------------------------------------ record_status
     def _record_status(self, args: dict[str, Any]) -> dict[str, Any]:
         fields: dict[str, Any] = {"status": args["status"]}
-        for key in ("outcome", "phase", "round", "best_version", "package_key"):
+        for key in (
+            "outcome",
+            "phase",
+            "round",
+            "best_version",
+            "package_key",
+            "failure",
+            "last_refusal",
+        ):
             if key in args:
                 fields[key] = args[key]
         if "open_risk_ids" in args:

@@ -15,7 +15,7 @@ from psycopg_pool import ConnectionPool
 
 from architect.gateway import cache, replay, router, structured, untrusted
 from architect.gateway.budget import Budget, Reservation
-from architect.gateway.config import Candidate, GatewayConfig, load_config
+from architect.gateway.config import Candidate, GatewayConfig, anthropic_api_key, load_config
 from architect.gateway.errors import (
     AllCandidatesFailed,
     BudgetExceeded,
@@ -345,7 +345,7 @@ def default_providers() -> dict[str, Provider]:
     from architect.gateway.providers.mock import MockProvider
 
     providers: dict[str, Provider] = {"mock": MockProvider()}
-    if os.environ.get("ANTHROPIC_API_KEY"):
+    if anthropic_api_key():
         from architect.gateway.providers.anthropic import AnthropicProvider
 
         providers["anthropic"] = AnthropicProvider()

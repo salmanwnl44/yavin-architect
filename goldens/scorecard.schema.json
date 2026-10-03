@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://yavin.dev/goldens/scorecard.schema.json",
+  "title": "GoldenScorecard",
+  "description": "What one golden-task run did, scored against the task's expected.yaml. Written by `architect golden run` and validated on write. It never contains a key or a prompt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task", "mode", "provider", "session_id", "project_id", "started_at", "duration_s",
+    "planted_flaws", "flaws_caught", "flaws_repaired", "outcome", "status_at_gate",
+    "final_status", "gate", "requirement_coverage", "linter", "kill_resume", "rounds",
+    "final_model_version", "package_key", "tokens", "usd", "usd_cap", "criteria", "passed"
+  ],
+  "properties": {
+    "task": { "type": "string" },
+    "mode": { "enum": ["review", "design"] },
+    "provider": { "enum": ["live", "mock"] },
+    "session_id": { "type": "string" },
+    "project_id": { "type": "string" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "duration_s": { "type": "number", "minimum": 0 },
+    "planted_flaws": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "check", "element", "caught", "caught_in_round", "repaired", "repaired_in_round"],
+        "properties": {
+          "id": { "type": "string" },
+          "check": { "type": "string", "pattern": "^C-[0-9]{3}$" },
+          "element": { "type": "string" },
+          "caught": { "type": "boolean" },
+          "caught_in_round": { "type": ["integer", "null"], "minimum": 1 },
+          "repaired": { "type": "boolean" },
+          "repaired_in_round": { "type": ["integer", "null"], "minimum": 1 }
+        }
+      }
+    },
+    "flaws_caught": { "type": "integer", "minimum": 0 },
+    "flaws_repaired": { "type": "integer", "minimum": 0 },
+    "unexpected_failures_on_seed": {
+      "type": "array",
+      "description": "Review mode: checks that failed on the seed besides the planted ones.",
+      "items": { "type": "string" }
+    },
+    "outcome": { "type": ["string", "null"] },
+    "status_at_gate": { "type": ["string", "null"] },
+    "final_status": { "type": "string" },
+    "closed_with": {
+      "type": ["string", "null"],
+      "description": "How the runner closed the gate: approve on an ALLOWED package, else reject. The runner never signs a waiver."
+    },
+    "failure": { "type": ["string", "null"] },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict", "reasons"],
+      "properties": {
+        "verdict": { "type": ["string", "null"] },
+        "reasons": { "type": "array", "items": { "type": "object" } }
+      }
+    },
+    "requirement_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check", "status", "requirements", "uncovered", "uncovered_listed_as_risks"],
+      "properties": {
+        "check": { "const": "C-001" },
+        "status": { "type": ["string", "null"] },
+        "requirements": { "type": "array", "items": { "type": "string" } },
+        "uncovered": { "type": "array", "items": { "type": "string" } },
+        "uncovered_listed_as_risks": { "type": "boolean" }
+      }
+    },
+    "linter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risks_found", "expected_risks", "expected_found"],
+      "properties": {
+        "risks_found": { "type": "array", "items": { "type": "string" } },
+        "expected_risks": { "type": "array", "items": { "type": "string" } },
+        "expected_found": { "type": "boolean" }
+      }
+    },
+    "kill_resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "clean", "worker_exit_code", "duplicate_idempotency_keys", "seq_dense"],
+      "properties": {
+        "performed": { "type": "boolean" },
+        "after": { "type": ["string", "null"] },
+        "clean": { "type": ["boolean", "null"] },
+        "worker_exit_code": { "type": ["integer", "null"] },
+        "duplicate_idempotency_keys": { "type": "integer", "minimum": 0 },
+        "seq_dense": { "type": "boolean" }
+      }
+    },
+    "rounds": { "type": "integer", "minimum": 0 },
+    "final_model_version": { "type": ["string", "null"] },
+    "package_key": { "type": ["string", "null"] },
+    "open_risks": { "type": "array", "items": { "type": "string" } },
+    "tokens": { "type": "integer", "minimum": 0 },
+    "usd": { "type": "number", "minimum": 0 },
+    "usd_cap": { "type": ["number", "null"] },
+    "criteria": {
+      "type": "object",
+      "description": "Each pass criterion of the run's mode, as it was evaluated.",
+      "additionalProperties": { "type": "boolean" }
+    },
+    "passed": { "type": "boolean" }
+  }
+}

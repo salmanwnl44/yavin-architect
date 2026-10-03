@@ -853,3 +853,51 @@ def test_source_endpoints(client, pool, mock, mock_b, tmp_path, monkeypatch):
     missing = client.post(f"{base}/sources/src_0000000000/extract")
     assert missing.status_code == 404 and missing.json()["code"] == "SOURCE_NOT_FOUND"
     assert client.post(f"{base}/sources").status_code == 422
+
+
+# --- M7: a usd cap on the extraction job's own scope (what the live test L3 relies on)
+
+
+def test_a_usd_cap_on_the_job_scope_stops_extraction_before_the_provider_and_it_resumes(
+    pool, ingestor, pipeline, mock, mock_b, tmp_path
+):
+    from architect.arbiter import Arbiter
+    from architect.gateway.errors import BudgetExceeded
+    from architect.ingestion.normalize import typed_id
+    from builders import candidate
+
+    source = ingest_readme(pool, ingestor, tmp_path)
+    job_id = typed_id("job", PROJECT, source.content_hash, str(PIPELINE_VERSION))
+    scope = {"session": f"ingest:{job_id}"}
+
+    def set_cap(usd: float) -> None:
+        Arbiter(pool).submit(
+            PROJECT,
+            candidate(
+                "budget.updated",
+                {"scope": scope, "limits": {"usd": usd}},
+                actor={"kind": "human", "id": "live-test"},
+            ),
+        )
+        catch_up(pool)
+
+    base = claim_of(FENCING_LOCATOR, "WAL", "rejects", "stale epoch appends", FENCING_QUOTE)
+    mock.enqueue({"claims": [base]})
+    mock_b.enqueue({"claims": [base]})
+    # pass A (tier-cheap) reserves about two cents; pass B (tier-mid) about four: the cap
+    # lets the first through and refuses the second before any provider is called
+    set_cap(0.03)
+    with pytest.raises(BudgetExceeded) as refused:
+        pipeline.run(PROJECT, source.source_id)
+    assert refused.value.dimension == "usd" and refused.value.scope == scope
+    assert mock.call_count == 1 and mock_b.call_count == 0
+    assert typed_job(pool)["job_id"] == job_id and typed_job(pool)["stage"] == "pass_b"
+    assert events_of(pool, "claim.proposed", "claim.committed") == []
+    assert pipeline._gateway.spend(scope)["usd"] <= 0.03
+
+    set_cap(1.00)
+    report = pipeline.run(PROJECT, source.source_id)
+    assert report.job_id == job_id and report.resumed_from == "pass_b"
+    assert len(report.committed) == 1
+    assert mock.call_count == 1 and mock_b.call_count == 1, "pass A was not asked again"
+    assert pipeline._gateway.spend(scope)["usd"] <= 1.00

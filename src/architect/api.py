@@ -39,10 +39,20 @@ class SessionIn(BaseModel):
     preset: str = "quick"
     overrides: dict[str, Any] = Field(default_factory=dict)
     sources: list[str] = Field(default_factory=list)
+    seed: dict[str, Any] | None = None  # review mode: a SystemModel to start from
 
 
-class SteerIn(BaseModel):
-    text: str = Field(min_length=1)
+class SignalIn(BaseModel):
+    """The body of a session signal: `text` for steer, `reason` for approve-with-risks, the
+    amounts to add for extend, and who decides."""
+
+    text: str | None = None
+    reason: str | None = None
+    signer: str | None = None
+    tokens: int | None = Field(default=None, ge=0)
+    usd: float | None = Field(default=None, ge=0)
+    wall_clock_minutes: int | None = Field(default=None, ge=0)
+    rounds: int | None = Field(default=None, ge=0)
 
 
 def create_app(
@@ -303,6 +313,7 @@ def create_app(
                 preset=body.preset,
                 overrides=body.overrides,
                 sources=body.sources,
+                seed=body.seed,
             )
         except ValueError as error:
             raise Rejection("MALFORMED_REQUEST", str(error), "$.preset") from error
@@ -337,24 +348,48 @@ def create_app(
         project_id: str,
         session_id: str,
         action: str,
-        body: SteerIn | None = None,
+        body: SignalIn | None = None,
     ) -> dict[str, Any]:
+        """pause | resume | cancel | steer {text} | approve | approve-with-risks {reason} |
+        reject | extend {tokens?, usd?, wall_clock_minutes?, rounds?}. A decision the open
+        gate cannot take is refused here with DECISION_REFUSED (the workflow applies the same
+        rules)."""
         require_project(request, project_id)
-        if action not in session_service.SIGNALS:
+        name = action.replace("-", "_")
+        if name not in session_service.SIGNALS:
             raise Rejection(
                 "MALFORMED_REQUEST",
                 f"action must be one of {', '.join(session_service.SIGNALS)}",
                 "$.action",
             )
-        if action == "steer" and body is None:
+        body = body or SignalIn()
+        if name == "steer" and not (body.text or "").strip():
             raise Rejection("MALFORMED_REQUEST", "steer needs a body with text", "$.text")
-        if session_service.session_row(request.app.state.pool, project_id, session_id) is None:
+        row = session_service.session_row(request.app.state.pool, project_id, session_id)
+        if row is None:
             raise Rejection(
                 "SESSION_NOT_FOUND", f"no session {session_id} in project {project_id!r}"
             )
+        extension = None
+        if name == "extend":
+            extension = {field: getattr(body, field) for field in session_service.EXTENSION_FIELDS}
+        if name in session_service.DECISIONS:
+            problem = session_service.decision_problem(
+                row, name, reason=body.reason, extension=extension
+            )
+            if problem is not None:
+                raise Rejection("DECISION_REFUSED", problem, "$.action")
         client = await temporal_client(request.app)
-        await session_service.signal(client, session_id, action, body.text if body else None)
-        return {"session_id": session_id, "signal": action}
+        await session_service.signal(
+            client,
+            session_id,
+            name,
+            body.text,
+            reason=body.reason,
+            signer=body.signer,
+            extension=extension,
+        )
+        return {"session_id": session_id, "signal": name}
 
     # The checks engine (M3). A run records its results through the Arbiter.
 

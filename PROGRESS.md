@@ -14,13 +14,15 @@
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 | M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
+| M7 console, golden task #1 | **built**: gate decisions and extend, seed models, the console, golden task gt-001 and its runner; exit tests P1 to P6 green in CI. **Phase 1 exit test: PENDING LIVE RUN** (M7-live) |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
 the read side, M3 built the checks engine, C2 moved the contracts to v1.1 (a minor version:
 optional fields and documented rules, every v1.0 document still valid), M4 built the gateway,
 M5 the ingestion pipeline and M6 the session engine. CI runs the whole suite on `postgres:16`
-with a Temporal dev server beside it: see the M6 section for the output. M7 has not been
-started.
+with a Temporal dev server beside it: see the M7 section for the output. The live half of M7
+(the baseline and the Phase 1 exit test) is pending: see "M7-live" below. Phase 2 has not
+been started.
 
 ## M0: scaffold
 
@@ -847,7 +849,8 @@ the platform to any LLM; no later module imports an LLM SDK or names a model.
   marked "VERIFY against the provider's current pricing page". `exclude_families` filters
   candidates; nothing left is `NoEligibleModel`.
 - **Providers** (`gateway/providers/`): `mock.py` (deterministic, scripted, counts calls;
-  all of CI runs on it), `anthropic.py` (the official SDK, key from `ANTHROPIC_API_KEY`;
+  all of CI runs on it), `anthropic.py` (the official SDK, key from `ARCHITECT_ANTHROPIC_API_KEY`, falling back
+  to `ANTHROPIC_API_KEY`;
   structured output through the API's native `output_config.format` JSON Schema; 429, 529,
   5xx, timeouts and connection failures retryable, other 4xx and refusals not),
   `openai_compat.py` (httpx2 against `{base}/v1/chat/completions`; `response_format`
@@ -911,14 +914,25 @@ the platform to any LLM; no later module imports an LLM SDK or names a model.
 never in a file in the repo:
 
 ```
-$env:ANTHROPIC_API_KEY = "..."           # bash: export ANTHROPIC_API_KEY=...
+$env:ARCHITECT_ANTHROPIC_API_KEY = "..."   # bash: export ARCHITECT_ANTHROPIC_API_KEY=...
 pytest -m live -v
 # L2 (OpenAI-compatible) also needs:
 $env:OPENAI_COMPAT_BASE_URL = "http://localhost:8000"   # and OPENAI_COMPAT_API_KEY if required
 ```
 
 L1 makes a tiny completion and a structured round trip on tier-cheap and records tokens and
-usd; L2 does the same through the OpenAI-compatible provider. They have not been run.
+usd; L2 does the same through the OpenAI-compatible provider. They have not been run. L2
+also carries the marker `live_openai_compat`: while `OPENAI_COMPAT_BASE_URL` is unset it is
+deselected at collection (`tests/conftest.py`), not failed and not skipped, so
+`pytest -m live` on a machine without such a server runs L1, L3 and L4 only.
+
+**The key's variable (M7 amendment).** The app reads `ARCHITECT_ANTHROPIC_API_KEY` first and
+falls back to `ANTHROPIC_API_KEY` (`gateway/config.py::anthropic_api_key`, used by the
+provider and by `default_providers`). The app's own name keeps the key away from any other
+tool in the same shell that uses `ANTHROPIC_API_KEY` for its own auth. `tests/conftest.py`
+removes `ARCHITECT_ANTHROPIC_API_KEY` from every test not marked `live`, so a real key in a
+developer's shell cannot reach the default gateway of a mock test. The guards at the top of
+L1, L3 and L4 use the same lookup.
 
 ### Exit tests
 
@@ -1017,8 +1031,8 @@ curl -X POST localhost:8000/v1/projects/P/sources/S/extract
 curl localhost:8000/v1/projects/P/sources ; curl "localhost:8000/v1/projects/P/claims?grade=design_grade"
 ```
 
-L3 (manual): put a short document in `tests/live_docs/` (gitignored), set `ANTHROPIC_API_KEY`
-in the shell, run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
+L3 (manual): put a short document in `tests/live_docs/` (gitignored), set the key in the
+shell (M4, "Live tests"), run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
 
 ### Exit tests
 
@@ -1062,7 +1076,7 @@ as the only adversary (AI adversaries are M10), research as retrieval over exist
 - **The Architect agent v1** (`sessions/agent.py`): purposes `frame`, `draft`, `repair`
   on `tier-frontier`, strict output schemas (requirements with metric/target/unit/quote;
   patch ops plus optional ADRs and questions; repairs plus waiver requests), one fixed
-  prompt per purpose (`architect-v1`) with a marker line `[architect purpose=.. round=..]`
+  prompt per purpose (`architect-v1`; `architect-v2` since M7) with a marker line `[architect purpose=.. round=..]`
   the scripted test provider keys on. Its output is turned into typed protocol messages
   (`Task`, `ClaimProposal`, `ModelPatchProposal`, `Question`) validated against
   `agent_protocol.schema.json` and appended to `ag_messages` (same `append_only()` trigger
@@ -1143,7 +1157,9 @@ improvement being fewer blocking reasons, then fewer failing or erroring checks;
 clock ran out (checked before every step); (e) the cancel signal. Pause, steer and cancel
 take effect at the next step boundary; the wall clock is `workflow.now()` against the start.
 
-**Outcome and status.** The outcome says how the deliberation ended: `completed` (a),
+**Outcome and status** (as built in M6; M7 changed the gate: every outcome but cancel now
+ends at it, and it takes four decisions; see M7, Part A). The outcome says how the
+deliberation ended: `completed` (a),
 `completed_with_risks` (b or c with the gate BLOCKED), `stopped_budget`, `stopped_time`,
 `cancelled`, `rejected` (at the deep preset's mid gate), `failed` (an unexpected error after
 the activities' retries; the only outcome without a package). The status says where the
@@ -1203,7 +1219,7 @@ Without Docker, any Temporal dev server works (`temporal server start-dev`); the
 one themselves when `ARCHITECT_TEMPORAL_ADDRESS` is unset. Model calls go through the gateway
 as everywhere else: with no key in the environment the worker has only the mock provider.
 
-L4 (manual): `pytest -m live -v -k l4` with `ANTHROPIC_API_KEY` in the shell runs a real
+L4 (manual): `pytest -m live -v -k l4` with the key in the shell (M4, "Live tests") runs a real
 quick session on a tiny brief with a small cap and prints the timeline, gate, risks and usd.
 
 ### Exit tests
@@ -1235,6 +1251,227 @@ Nothing skipped; the four deselected tests are the live ones (L1, L2, L3, L4). T
 on the Windows development machine against the portable PostgreSQL 16: `295 passed, 4
 deselected in 402.38s`.
 
+## M7: console, golden task #1, and the Phase 1 exit test
+
+**Phase 1 exit test: PENDING LIVE RUN.** Everything that needs no key is built and
+tested. The live baseline (Step 0: L1, L3, L4) and the live exit test (Part E: two golden
+runs under a $3 cap each) are deferred to a follow-up session, "M7-live", because the app's
+key was not visible to the session that built this.
+
+### Before the module: three amendments
+
+1. **The key's variable.** The Anthropic provider and `default_providers` read
+   `ARCHITECT_ANTHROPIC_API_KEY`, then `ANTHROPIC_API_KEY` (see M4, "Live tests"). G9 sets a
+   second, distinct fake key under the new name and asserts neither fake reaches a `gw_*`
+   row, a log line or an exception. The guards of L1, L3 and L4 use the same lookup.
+   `tests/conftest.py` removes the app's variable from every test not marked `live`.
+2. **L2** carries `live_openai_compat` and is deselected at collection unless
+   `OPENAI_COMPAT_BASE_URL` is set: not failed, not skipped.
+3. **The L3 document** is `tests/live_docs/arxiv-2609.32972v1.pdf` (gitignored): "Time
+   Semantics and Liveness Artifacts in Adversarial Consensus Simulation",
+   <https://arxiv.org/abs/2609.32972v1>, primary category cs.DC, license CC BY 4.0 as read
+   from arXiv's own record, 6 pages counted from the file, sha256
+   `ceeacf2faebc55a473fee138e9ba083312e3da9066ab826351090d4d35eaeb6c`. It parses into 136
+   segments, so L3 runs under a per-test usd cap: a `budget.updated` of $1.00 on the
+   extraction job's own gateway scope (`ARCHITECT_L3_USD_CAP` overrides). A mock test pins
+   that such a cap refuses before the provider and that the job resumes.
+
+### The intermittent S7 test: found, fixed, proven
+
+`test_s7_steer_enters_the_next_context_and_cancel_packages` failed once in a full local run.
+
+| Step | Result |
+| --- | --- |
+| Reproduce: the unmodified test, 50 isolated runs, full output kept | **9 failed, 41 passed (18%)** |
+| The failing assertion, the same in all nine | `'Prefer at-least-once' in '[]'`: no `architect-draft` gateway call existed |
+| After the fix: the three S7 tests, 100 iterations on a frozen checkout of `93a14e9` | **100 green, 0 failed** |
+
+**Root cause, in the test.** It waited for the status view to show phase `draft` and then
+sent `pause` and `cancel`. The phase becomes visible before the draft step's boundary, so
+both signals could land before the draft call was made, and the session was cancelled with
+no draft. The earlier guess (the frame step compiled before the steer) was wrong; the
+captured assertion showed what actually happened.
+
+**A real workflow bug, found while reading the signal handling.** A steer sent after the
+loop's last step boundary, or while the session waited for the owner, was never recorded:
+the buffer was only drained at step boundaries. A new test pins it by holding the session
+inside its last step; it failed on the old workflow.
+
+**The fix.** In the workflow, signals only record (a flag or a buffer) and are consumed at
+well-defined points: steers at every step boundary, at the loop's exit and at the human
+gates; decisions only at a gate (rule 12 in CLAUDE.md). In the tests,
+`session_fixtures.ActivityGate` holds the session inside a named activity through the
+activities' hooks and the test awaits a `threading.Event`: the pause is sent while the
+first activity is held, the cancel while the attack on the draft is held. No polling of a
+transient state, no sleeps. The original assertions are kept and three are added (the
+steer is recorded before the pause takes effect; the session is paused before `repair`;
+no repair was asked for after the cancel). "Pause stops progress" is now checked by sending
+another signal and querying the settled state, instead of sleeping 1.5 s.
+
+### Part A: the gate
+
+- **Every outcome but `cancelled` ends at the human gate** in `awaiting_approval` with its
+  package: `completed`, `completed_with_risks`, and now `stopped_budget` and `stopped_time`.
+  Cancel ends directly: the human already decided.
+- **Decisions.** `approve` applies only when the package's gate verdict is ALLOWED.
+  `approve_with_risks` applies to any package, needs a non-empty reason, and records one
+  `waiver.signed` per open blocking reason: actor the human, `risk` the reason, `target_ref`
+  the check (or objection). `reject` always applies. Final statuses: `approved`,
+  `approved_with_risks`, `rejected`.
+- **`extend(tokens?, usd?, wall_clock_minutes?, rounds?)`** applies to a session stopped by
+  budget or wall clock. The amounts are added to the current limits, written as a new
+  `budget.updated` signed by the human, and the attack/repair/verify loop resumes in a new
+  round from the best version so far (a new head is created from it when it is not the
+  head already), then converges and packages again. A time-stopped session needs
+  `wall_clock_minutes`; a budget-stopped one needs `tokens` or `usd`.
+- **Refusals.** A decision the open gate cannot take is refused with a recorded reason
+  (`last_refusal` in the status query and in `ses_sessions`) and the gate stays open. A
+  decision sent while no gate is open is refused, not kept. The CLI and the API apply the
+  same rules from the read model first (`service.decision_problem`), so the owner hears
+  "no" at once: exit code 1, or HTTP 422 `DECISION_REFUSED`.
+- **The wall clock counts running time.** Time spent waiting at a human gate moves the
+  deadline; paused time still counts.
+- **CLI/API**: `architect session approve | approve-with-risks --reason R | reject |
+  extend [--tokens N] [--usd X] [--wall-clock-minutes M] [--rounds R]`, each with
+  `--signer` (default `$ARCHITECT_USER`, else the login name);
+  `POST /v1/projects/{pid}/sessions/{sid}/{approve|approve-with-risks|reject|extend}` with
+  `{reason?, signer?, tokens?, usd?, wall_clock_minutes?, rounds?}`.
+
+### Part B: seed models (review mode)
+
+`architect session start --seed model.json` (API: `seed`). The seed is a SystemModel
+document. After genesis it is committed as one patch (`model.patch_proposed` then
+`model.patch_committed`, one `add_element` per element and one `add_link` per link) through
+the Arbiter, so it must be valid; the draft phase is skipped and the session goes to the
+attack. Frame still runs on the brief. A seed the Arbiter refuses fails the session cleanly:
+status and outcome `failed`, and the typed rejection as `failure`
+(`the seed model was refused: {"code": "INVALID_MODEL_RESULT", ...}`).
+
+A brief can fix its requirement ids: a list item that starts with `[slug]` is the
+requirement `req_<slug>`, whatever slug the model chooses (the pipeline maps a returned
+requirement to the labelled line that contains its quote). A seed's `requirement_refs` and
+SATISFIES links can then name requirements before any session has run.
+
+### Part C: the console
+
+- **`architect session watch --session S`** (`rich`): status and outcome, the phase timeline
+  with durations, the round, the gate's blocking reasons, each failing check with one line
+  of evidence, the open risks, spend against budget, the last five agent messages, and at a
+  gate the decisions that apply. `console.snapshot` reads the read models into plain data;
+  `console.render` is a pure function of that snapshot (durations come from the timeline
+  and the snapshot's own `as_of`). `--once` prints one frame.
+- **`architect model diff --project P V1 V2`** (`modeldiff.py`, pure): elements added,
+  removed and changed field by field, links added and removed. `session show` prints the
+  diff each round's repair made ("diff vs previous version").
+- **`architect why --project P --element E [--version V]`**: the M2 why-trace as text:
+  element, requirements, the claims stating them, ADRs, their evidence claims, and each
+  source with its locator.
+- `architect new-project P` creates a project from the command line.
+
+### Part D: golden task gt-001 and the golden runner
+
+- **`goldens/gt-001/`**: `brief.md` (four measurable requirements and "the system should be
+  robust"), `seed.json` (an API gateway, a queue, a worker pool and a datastore, an external
+  client and a trust boundary around the cluster), `expected.yaml` (the answer key),
+  `mock/` (the scripted architect's outputs).
+- **Exactly four planted flaws**, verified by a test against the real checks: F1 the
+  gateway→queue flow has no `backpressure_ref` (C-012); F2 the client→gateway flow crosses
+  the boundary without `input_validation` (C-008); F3 the worker pool is stateful and
+  durable with no recovery block (C-007); F4 the datastore declares `max_qps` 2000 against a
+  required 2250 (C-005, a fail, not an error). Every other check passes or is skipped.
+- **`architect golden run gt-001 [--mode review|design] [--live] [--kill-after attack]`**
+  creates a fresh project, starts a real session with the task's usd cap ($3), and runs the
+  worker in a process of its own. With `--kill-after attack` the first worker ends abruptly
+  (`os._exit`) once the first attack phase has completed and a second one resumes the
+  session from its history. At the end gate the runner approves an ALLOWED package and
+  rejects any other; it never signs a waiver. When no Temporal server is configured it
+  starts the SDK's dev server for the run.
+- **The scorecard** (`goldens/scorecard.schema.json`, validated on write): mode, live or
+  mock, each planted flaw with the round it was caught and the round it was repaired, the
+  outcome and status, the gate verdict and reasons, requirement coverage (C-001), the
+  linter's risks, whether a kill/resume was performed and was clean (dense seq, no duplicate
+  idempotency key), rounds, duration, tokens, usd, and each pass criterion as evaluated.
+  Mock scorecards go to `data/golden/`; live ones to `goldens/results/`.
+
+### Part F
+
+`docs/getting-started.md`: install, PostgreSQL and Temporal on Windows without Docker and
+on Linux with Docker Compose, the key, the worker, a session from a brief, watching it,
+deciding at the gate, reading the result, and running a golden task.
+
+### Decisions worth knowing
+
+- **Existing tests that asserted the old gate semantics were updated**: S2, the second S3
+  test, S4 and S5 ended in `approved` or in the stopped status directly; they now decide at
+  the gate with `reject` and assert the outcome separately. L4 closes the gate with
+  approve-if-ALLOWED-else-reject. Their other assertions are unchanged.
+- **The frame prompt gained one sentence** (use the brief's bracket labels as slugs) and is
+  now `architect-v2`. This is about requirement ids, which a seed needs; it is not tuned to
+  repair quality, which Part E reports and does not gate.
+- **The worker of a golden run ends when its stdin closes.** On Windows a virtualenv's
+  `python.exe` is a launcher, so killing the process the runner started would leave the real
+  interpreter running.
+- **`--kill-after attack` is the worker ending itself**, right after the attack activity has
+  completed and while refusing further activities, rather than an outside kill at an
+  arbitrary instant: an activity cut off mid-flight would wait out its 30-minute timeout
+  before Temporal retried it.
+- **A waiver's `target_ref` is the check id** (one waiver per blocking reason, as decided),
+  which waives that check for the model, not for one element.
+- **Agent messages have an insertion-order column** (`ag_messages.n`): their `ts` is the
+  session clock's origin and cannot order them.
+
+### Exit tests (mock and real dev server; no key)
+
+| # | Exit test | Result | Evidence |
+| --- | --- | --- | --- |
+| P1 | Gate: budget stop → `awaiting_approval` with its package; `extend` resumes from the best and completes; `approve` on BLOCKED refused; `approve_with_risks` without a reason refused, with one records one human waiver per blocking reason; cancel → no gate | green | `test_m7_gate_seed.py::test_p1_a_budget_stop_waits_at_the_gate_refuses_what_cannot_apply_and_extend_resumes`, `::test_p1_approve_with_risks_signs_one_human_waiver_per_blocking_reason`, `::test_p1_cancel_ends_directly_and_a_decision_without_an_open_gate_is_refused`, `::test_p1_the_read_model_predicts_what_the_workflow_refuses` |
+| P2 | Diff: added, removed, changed elements and links, field-level changes, identical versions → empty | green | `test_m7_console.py::test_p2_*` (4 tests) |
+| P3 | Watch: the frame of a recorded session shows phases, blocking reasons, risks and spend | green | `test_m7_console.py::test_p3_a_frame_is_a_pure_function_of_its_snapshot`, `::test_p3_watch_shows_a_recorded_session_and_the_cli_takes_the_gate_decisions` |
+| P4 | Seed: committed through the Arbiter, draft skipped; an invalid seed refused with the typed error, session `failed` with the reason | green | `test_m7_gate_seed.py::test_p4_a_seed_is_committed_through_the_arbiter_and_the_draft_is_skipped`, `::test_p4_an_invalid_seed_is_refused_by_the_arbiter_and_the_session_fails_cleanly` |
+| P5 | Golden (mock): review catches F1 to F4 in round 1 with exactly C-012, C-008, C-007, C-005; the seed is clean otherwise; the scripted repairs → ALLOWED; the scorecard validates; the linter flags the unmeasurable requirement | green | `test_m7_golden.py::test_p5_*` (4 tests) |
+| P6 | Golden kill/resume (mock, real dev server): `--kill-after attack` → clean resume in the scorecard | green | `test_m7_golden.py::test_p6_killing_the_worker_after_attack_resumes_cleanly` |
+| | S7 deterministic, the lost steer pinned | green | `test_sessions.py::test_s7_*` (3 tests); 100 of 100 iterations |
+| | CLI and API of Parts A to D; every pre-existing test green | green | `test_m7_console.py`, `test_m7_golden.py::test_golden_run_from_the_command_line`; the run below |
+
+CI output (branch head `e4ffea5`, push run 37134603339 on `ubuntu-latest` with `postgres:16`
+and a Temporal dev server started by the Temporal CLI; the pull_request run 37134607917
+agreed):
+
+```
+================ 323 passed, 4 deselected in 105.73s (0:01:45) =================
+```
+
+Nothing failed and nothing was skipped; the four deselected tests are the live ones (L1 to
+L4). Every P1 to P6 test, the three S7 tests, S6 and S11 are PASSED by name in that log.
+Earlier CI on the S7 fix alone (`93a14e9`): run 37131649796, success.
+
+Local runs on Windows (portable PostgreSQL 16, the SDK's own Temporal servers, mock providers
+only):
+
+| Commit | Run | Result |
+| --- | --- | --- |
+| `390ab5b` (amendments only) | full suite, first | 297 passed, **1 failed** (the S7 test above), 4 deselected |
+| `390ab5b` | full suite, second | 298 passed, 4 deselected |
+| `4b87d58` | the unmodified S7 test, 50 isolated runs | 41 passed, **9 failed** |
+| `93a14e9` (the fix) | the three S7 tests, 100 iterations | 100 green |
+| `8e2d2a9` (Parts A to D) | full suite | 322 passed, 4 deselected in 585 s |
+
+### M7-live: what remains
+
+Run in a session started from a shell where `ARCHITECT_ANTHROPIC_API_KEY` is set.
+
+1. **Step 0**: `pytest -m live -v`. L1 (gateway), L3 (extraction of the arXiv paper, under
+   its $1 cap), L4 (a quick session). L2 is deselected unless an OpenAI-compatible server is
+   configured. Report each result and its usd, the quarantine rate in L3, the timeline in L4.
+2. **Part E**, each under the $3 cap:
+   `architect golden run gt-001 --mode review --live --kill-after attack` and
+   `architect golden run gt-001 --mode design --live`.
+   Review passes when all four flaws are caught in round 1, the resume is clean, a final
+   model exists and the session ends with a package. Design passes when a model is produced,
+   C-001 passes or every unsatisfied requirement is an open risk, and a package exists.
+   Repair quality is reported, not gated.
+3. Commit both scorecards under `goldens/results/` and paste them here.
+
 ## Windows
 
 The database-backed tests ran only on Linux in CI through M5. With M6 the development
@@ -1244,6 +1481,8 @@ deselected).
 
 ## Open
 
-1. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
+1. **M7-live**: the live baseline (L1, L3, L4) and the two live golden runs that decide the
+   Phase 1 exit test. They need `ARCHITECT_ANTHROPIC_API_KEY` in the launching shell.
+2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
    session status event) stay open; P-7 to P-10 were applied in v1.1. Multi-head branching is
    planned for contracts v1.2 with M11.
