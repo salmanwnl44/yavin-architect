@@ -45,10 +45,15 @@ EXPECTED_ON_V3 = {
 
 
 def commit_fixture(pool, project_id: str = FIX) -> Arbiter:
+    """The fixture into a project; another project gets its own event ids, which are unique
+    across the database."""
     ledger.create_project(pool, project_id)
     arbiter = Arbiter(pool)
     for event in fixture_events():
-        arbiter.submit(project_id, as_candidate(event) | {"project_id": project_id})
+        candidate = as_candidate(event) | {"project_id": project_id}
+        if project_id != FIX:
+            candidate["event_id"] = f"evt_{project_id.upper():0>8}{event['seq']:04d}"
+        arbiter.submit(project_id, candidate)
     return arbiter
 
 
@@ -374,8 +379,12 @@ def test_the_check_endpoints(client, pool):
     assert unprojected.status_code == 404, "the read models have not caught up yet"
     Projector(pool).catch_up(FIX)
 
-    empty = client.get(f"{base}/checks")
-    assert empty.status_code == 200 and empty.json() == {"model_version": V3, "results": []}
+    # Before any run, the only result for V3 is the one the fixture's ledger carries.
+    own = client.get(f"{base}/checks")
+    assert own.status_code == 200
+    assert [(r["check_id"], r["result_id"]) for r in own.json()["results"]] == [
+        ("C-009", "chk_FIXC009P01")
+    ]
 
     posted = client.post(f"{base}/checks")
     assert posted.status_code == 200, posted.text
@@ -387,7 +396,7 @@ def test_the_check_endpoints(client, pool):
 
     listed = client.get(f"{base}/checks").json()["results"]
     assert {r["check_id"]: (r["status"], r["element_refs"]) for r in listed} == EXPECTED_ON_V3
-    assert all(r["evidence"]["model_version"] == V3 for r in listed)
+    assert all(r["evidence"]["model_version"] == V3 for r in listed), "the run outranks seq 33"
 
     gate = client.get(f"{base}/gate").json()
     assert gate["verdict"] == "BLOCKED" and gate["as_of_seq"] == LAST_SEQ
