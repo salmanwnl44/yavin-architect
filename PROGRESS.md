@@ -919,7 +919,10 @@ $env:OPENAI_COMPAT_BASE_URL = "http://localhost:8000"   # and OPENAI_COMPAT_API_
 ```
 
 L1 makes a tiny completion and a structured round trip on tier-cheap and records tokens and
-usd; L2 does the same through the OpenAI-compatible provider. They have not been run.
+usd; L2 does the same through the OpenAI-compatible provider. They have not been run. L2
+also carries the marker `live_openai_compat`: while `OPENAI_COMPAT_BASE_URL` is unset it is
+deselected at collection (`tests/conftest.py`), not failed and not skipped, so
+`pytest -m live` on a machine without such a server runs L1, L3 and L4 only.
 
 **The key's variable (M7 amendment).** The app reads `ARCHITECT_ANTHROPIC_API_KEY` first and
 falls back to `ANTHROPIC_API_KEY` (`gateway/config.py::anthropic_api_key`, used by the

@@ -56,6 +56,7 @@ def test_l1_anthropic_tier_cheap_completion_and_structured_round_trip(pool):
     assert gateway.spend({"session": "ses_LIVE000001"})["calls"] == 2
 
 
+@pytest.mark.live_openai_compat
 def test_l2_openai_compatible_server(pool):
     if not os.environ.get("OPENAI_COMPAT_BASE_URL"):
         pytest.fail("set OPENAI_COMPAT_BASE_URL to run the OpenAI-compatible live test")

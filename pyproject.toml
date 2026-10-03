@@ -41,7 +41,10 @@ packages = ["src/architect"]
 testpaths = ["tests"]
 # live tests call a real model provider; they are deselected (not skipped) unless asked for
 addopts = "-ra -m \"not live\""
-markers = ["live: calls a real model provider with a real key; run with: pytest -m live -v"]
+markers = [
+    "live: calls a real model provider with a real key; run with: pytest -m live -v",
+    "live_openai_compat: needs an OpenAI-compatible server; deselected unless OPENAI_COMPAT_BASE_URL is set",
+]
 
 [tool.ruff]
 line-length = 100
