@@ -127,7 +127,34 @@ CREATE TABLE IF NOT EXISTS proj_claims (
     premise_compromised boolean NOT NULL,  -- a refuted or retracted claim is in its premise chain
     first_seq           bigint  NOT NULL,
     last_seq            bigint  NOT NULL,  -- last event that committed it or changed its status
+    -- M5: computed, never in the ledger. grade: unverified | design_grade; confidence per
+    -- config/confidence.yaml with the inputs it was computed from.
+    two_pass_agreement  boolean NOT NULL DEFAULT false,
+    grade               text    NOT NULL DEFAULT 'unverified',
+    confidence          double precision NOT NULL DEFAULT 0,
+    confidence_inputs   jsonb   NOT NULL DEFAULT '{}'::jsonb,
     PRIMARY KEY (project_id, claim_id)
+);
+
+-- Every claim proposal, and whether a commit followed. A proposal never committed is a
+-- quarantined claim (M5).
+CREATE TABLE IF NOT EXISTS proj_claim_proposals (
+    project_id  text   NOT NULL REFERENCES projects (project_id),
+    proposal_id text   NOT NULL,
+    claim_id    text   NOT NULL,
+    claim       jsonb  NOT NULL,
+    seq         bigint NOT NULL,
+    committed   boolean NOT NULL DEFAULT false,
+    PRIMARY KEY (project_id, proposal_id)
+);
+
+-- Recorded experiments: the verification events a claim's grade and confidence count.
+CREATE TABLE IF NOT EXISTS proj_experiments (
+    project_id    text   NOT NULL REFERENCES projects (project_id),
+    seq           bigint NOT NULL,
+    experiment_id text   NOT NULL,
+    result_claims jsonb  NOT NULL,
+    PRIMARY KEY (project_id, seq)
 );
 
 -- One row per status a claim has held: [from_seq, to_seq), to_seq NULL while current.
@@ -293,4 +320,64 @@ CREATE TABLE IF NOT EXISTS gw_spend (
     reserved_tokens bigint  NOT NULL DEFAULT 0,
     reserved_usd    numeric NOT NULL DEFAULT 0,
     calls           integer NOT NULL DEFAULT 0
+);
+
+-- Ingestion (M5): derived, operational state. Segments are rebuildable from the object store;
+-- jobs, candidates and quarantine from the gateway's call log.
+CREATE TABLE IF NOT EXISTS ing_segments (
+    source_id  text    NOT NULL,
+    segment_id text    NOT NULL,
+    locator    text    NOT NULL,
+    kind       text    NOT NULL CHECK (kind IN ('statement', 'table', 'code')),
+    text       text    NOT NULL,
+    position   integer NOT NULL,
+    PRIMARY KEY (source_id, segment_id)
+);
+
+CREATE TABLE IF NOT EXISTS ing_jobs (
+    job_id                   text    PRIMARY KEY,
+    project_id               text    NOT NULL REFERENCES projects (project_id),
+    source_id                text    NOT NULL,
+    content_hash             text    NOT NULL,
+    pipeline_version         integer NOT NULL,
+    stage                    text    NOT NULL CHECK (stage IN ('parse', 'pass_a', 'pass_b', 'commit', 'done')),
+    status                   text    NOT NULL CHECK (status IN ('running', 'done')),
+    attempts                 integer NOT NULL DEFAULT 0,
+    pass_b_excluded_families jsonb
+);
+
+CREATE TABLE IF NOT EXISTS ing_candidates (
+    job_id       text    NOT NULL REFERENCES ing_jobs (job_id),
+    pass         text    NOT NULL CHECK (pass IN ('A', 'B')),
+    segment_id   text    NOT NULL,
+    candidate_id text    NOT NULL,
+    candidate    jsonb   NOT NULL,
+    call_id      text    NOT NULL,
+    family       text    NOT NULL,
+    position     integer NOT NULL,
+    PRIMARY KEY (job_id, pass, candidate_id)
+);
+
+CREATE TABLE IF NOT EXISTS ing_pass_b (
+    job_id     text NOT NULL REFERENCES ing_jobs (job_id),
+    segment_id text NOT NULL,
+    call_id    text NOT NULL,
+    PRIMARY KEY (job_id, segment_id)
+);
+
+CREATE TABLE IF NOT EXISTS ing_quarantine (
+    job_id     text  NOT NULL REFERENCES ing_jobs (job_id),
+    claim_id   text  NOT NULL,
+    segment_id text  NOT NULL,
+    reason     text  NOT NULL CHECK (reason IN ('pass_b_missing', 'spo_mismatch', 'magnitude_mismatch', 'condition_conflict')),
+    pass_a     jsonb NOT NULL,
+    pass_b     jsonb NOT NULL,
+    PRIMARY KEY (job_id, claim_id)
+);
+
+CREATE TABLE IF NOT EXISTS ing_metrics (
+    job_id text  NOT NULL REFERENCES ing_jobs (job_id),
+    metric text  NOT NULL,
+    value  jsonb NOT NULL,
+    PRIMARY KEY (job_id, metric)
 );

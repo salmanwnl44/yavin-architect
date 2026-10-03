@@ -18,9 +18,17 @@ from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
 from architect.contracts import first_error, json_path, load_contracts
+from architect.gateway.cache import canonical as _canonical
+from architect.ingestion import grades
+from architect.ingestion.normalize import spo_key
 from architect.model_fold import Model, PatchError, apply_patch, child_of, empty_model
 
 Event = dict[str, Any]
+
+
+def json_dumps(value: Any) -> str:
+    return _canonical(value).decode()
+
 
 PROJECTION = "read_models"
 
@@ -36,6 +44,8 @@ PROJ_TABLES = (
     "proj_waivers",
     "proj_checks",
     "proj_budgets",
+    "proj_claim_proposals",
+    "proj_experiments",
     "proj_session_timeline",
 )
 
@@ -113,14 +123,25 @@ class _Fold:
         )
 
     # claims
+    def claim_proposed(self) -> None:
+        claim = self.payload["claim"]
+        self.cur.execute(
+            "INSERT INTO proj_claim_proposals (project_id, proposal_id, claim_id, claim, seq) "
+            "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (project_id, proposal_id) DO NOTHING",
+            (self.pid, self.payload["proposal_id"], claim["id"], Jsonb(claim), self.seq),
+        )
+
     def claim_committed(self) -> None:
         claim = self.payload["claim"]
         claim_id = self.payload["claim_id"]
         derived_from = claim["provenance"].get("derived_from", [])
+        proposal = self.payload.get("from_proposal")
+        # M5: both extraction passes agreed when the extractor commits from its own proposal
+        agreed = proposal is not None and self.event["actor"].get("id") == "extractor"
         self.cur.execute(
             "INSERT INTO proj_claims (project_id, claim_id, claim, status, load_bearing, "
-            "taint_origin, supersedes, derived_from, premise_compromised, first_seq, last_seq) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, false, %s, %s)",
+            "taint_origin, supersedes, derived_from, premise_compromised, first_seq, last_seq, "
+            "two_pass_agreement) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, false, %s, %s, %s)",
             (
                 self.pid,
                 claim_id,
@@ -132,8 +153,15 @@ class _Fold:
                 derived_from,
                 self.seq,
                 self.seq,
+                agreed,
             ),
         )
+        if proposal is not None:
+            self.cur.execute(
+                "UPDATE proj_claim_proposals SET committed = true "
+                "WHERE project_id = %s AND proposal_id = %s",
+                (self.pid, proposal),
+            )
         self._open_status(claim_id, claim["status"], self.event["event_id"])
         for evidence in claim.get("evidence", []):
             self.edge("EVIDENCES", claim_id, evidence["source"])
@@ -143,9 +171,11 @@ class _Fold:
             self.edge("SUPERSEDES", claim_id, claim["supersedes"])
         if derived_from or claim["status"] in COMPROMISING_STATUSES:
             self._recompute_compromised()
+        self._recompute_grades()
 
     def claim_status_changed(self) -> None:
         self._set_status(self.payload["claim_id"], self.payload["to"], self.payload["cause_event"])
+        self._recompute_grades()
 
     def claim_retracted(self) -> None:
         self._set_status(self.payload["claim_id"], "retracted", self.event["event_id"])
@@ -177,6 +207,66 @@ class _Fold:
             "status, cause_event) VALUES (%s, %s, %s, NULL, %s, %s)",
             (self.pid, claim_id, self.seq, status, cause_event),
         )
+
+    def _recompute_grades(self) -> None:
+        """M5: grade and confidence for every committed claim of the project, from the sources
+        that evidence them, the claims that corroborate them and the verification events that
+        reference them. Deterministic, so a rebuild reproduces it."""
+        rows = self.cur.execute(
+            "SELECT c.claim_id, c.claim, c.status, c.taint_origin, c.two_pass_agreement, "
+            "c.grade, c.confidence, "
+            "(SELECT coalesce(array_agg(DISTINCT s.content_hash), '{}') FROM proj_sources s "
+            " WHERE s.project_id = c.project_id AND s.source_id IN "
+            " (SELECT jsonb_array_elements(c.claim -> 'evidence') ->> 'source')) AS hashes, "
+            "(SELECT count(*) FROM proj_checks k WHERE k.project_id = c.project_id "
+            " AND k.status = 'pass' AND k.element_refs ? c.claim_id) "
+            "+ (SELECT count(*) FROM proj_experiments x WHERE x.project_id = c.project_id "
+            " AND x.result_claims ? c.claim_id) AS verifications "
+            "FROM proj_claims c WHERE c.project_id = %s ORDER BY c.first_seq",
+            (self.pid,),
+        ).fetchall()
+        keyed: dict[str, list[tuple[str, set[str]]]] = {}
+        for row in rows:
+            claim = row["claim"]
+            key = (
+                spo_key(claim["subject"], claim["predicate"], claim["object"])
+                + "|"
+                + json_dumps(claim.get("magnitude"))
+            )
+            keyed.setdefault(key, []).append((row["claim_id"], set(row["hashes"])))
+        for row in rows:
+            claim = row["claim"]
+            key = (
+                spo_key(claim["subject"], claim["predicate"], claim["object"])
+                + "|"
+                + json_dumps(claim.get("magnitude"))
+            )
+            own = set(row["hashes"])
+            others: set[str] = set()
+            for claim_id, hashes in keyed[key]:
+                if claim_id != row["claim_id"]:
+                    others |= hashes - own
+            corroborations = len(others)
+            verifications = int(row["verifications"])
+            new_grade = grades.grade(row["status"], corroborations, verifications)
+            value, inputs = grades.confidence(
+                source_tier=row["taint_origin"],
+                corroborations=corroborations,
+                two_pass_agreement=row["two_pass_agreement"],
+                verification_events=verifications,
+            )
+            if new_grade != row["grade"] or value != row["confidence"]:
+                self.cur.execute(
+                    "UPDATE proj_claims SET grade = %s, confidence = %s, confidence_inputs = %s "
+                    "WHERE project_id = %s AND claim_id = %s",
+                    (new_grade, value, Jsonb(inputs), self.pid, row["claim_id"]),
+                )
+            else:
+                self.cur.execute(
+                    "UPDATE proj_claims SET confidence_inputs = %s WHERE project_id = %s "
+                    "AND claim_id = %s AND confidence_inputs = '{}'::jsonb",
+                    (Jsonb(inputs), self.pid, row["claim_id"]),
+                )
 
     def _recompute_compromised(self) -> None:
         self.cur.execute(
@@ -284,6 +374,15 @@ class _Fold:
             (self.pid, self.seq, p["waiver_id"], p["target_ref"], p["risk"], p["signer"]),
         )
 
+    def experiment_recorded(self) -> None:
+        p = self.payload
+        self.cur.execute(
+            "INSERT INTO proj_experiments (project_id, seq, experiment_id, result_claims) "
+            "VALUES (%s, %s, %s, %s)",
+            (self.pid, self.seq, p["experiment_id"], Jsonb(p["result_claims"])),
+        )
+        self._recompute_grades()
+
     def check_result(self) -> None:
         p = self.payload
         evidence = p.get("evidence")
@@ -314,6 +413,8 @@ class _Fold:
                 head["version_id"] if head else None,
             ),
         )
+        if p["status"] == "pass":
+            self._recompute_grades()
 
     # budgets (read by the model gateway)
     def budget_updated(self) -> None:
@@ -359,7 +460,9 @@ class _Fold:
 
 HANDLERS = {
     "source.ingested": _Fold.source_ingested,
+    "claim.proposed": _Fold.claim_proposed,
     "claim.committed": _Fold.claim_committed,
+    "experiment.recorded": _Fold.experiment_recorded,
     "claim.status_changed": _Fold.claim_status_changed,
     "claim.retracted": _Fold.claim_retracted,
     "model.version_created": _Fold.model_version_created,
@@ -378,11 +481,9 @@ HANDLERS = {
 # an accident.
 NOT_PROJECTED = frozenset(
     {
-        "claim.proposed",
         "model.patch_proposed",
         "entity.merged",
         "entity.merge_reverted",
-        "experiment.recorded",
     }
 )
 
