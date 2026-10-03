@@ -46,6 +46,11 @@ Do not change the contracts.
    database, network, clock or randomness, and imports nothing from the api, db, Arbiter or
    projector modules (`tests/test_architecture.py` enforces it). The runner records every
    result as a `check.result` event through the Arbiter, idempotent on the inputs hash.
+8. **One path to any model.** Every LLM call goes through `architect.gateway`. Only
+   `gateway/providers/` imports an LLM SDK or speaks HTTP to a model server, and only
+   `config/models.yaml` names a model id, a family or a price (`tests/test_gateway.py`
+   enforces both). Every attempt is recorded in the append-only `gw_calls` log; keys are
+   read from the environment and never stored, logged or raised.
 
 ## Layout
 
@@ -63,6 +68,9 @@ Do not change the contracts.
 - `src/architect/checks/`: the checks engine. `c0NN.py` are pure check functions,
   `catalog.json` + `catalog.py` the catalog and registry, `runner.py` the only module there
   that reads a database or records results (through the Arbiter).
+- `src/architect/gateway/`: the model gateway. `gateway.py` is the one public entry;
+  `providers/` holds the mock, Anthropic and OpenAI-compatible adapters; `config/models.yaml`
+  (repo root) is the model table.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -74,6 +82,9 @@ docker compose up -d postgres            # or any Postgres 16; set ARCHITECT_DAT
 ruff check .
 pytest
 ```
+
+Live provider tests are marked `live` and deselected by default; `pytest -m live -v` with a
+key in the shell runs them.
 
 Tests create a throwaway schema per test inside the database named by
 `ARCHITECT_DATABASE_URL` (default `postgresql://architect:architect@localhost:5432/architect`).
@@ -90,8 +101,8 @@ Tests create a throwaway schema per test inside the database named by
 - After a PR merges, delete its remote branch — don't ask.
 - The Windows local-database check is deferred to M6 (Docker Desktop). Do not raise it as
   an open question before then.
-- Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
-  workflows, a graph database, vector search, UI, auth, multi-tenancy.
+- Out of scope until their milestone: extraction, agents and sessions, Temporal workflows,
+  a graph database, vector search, UI, auth, multi-tenancy.
 
 ### Module report (mandatory)
 Every session ends with exactly this block and nothing after it:
