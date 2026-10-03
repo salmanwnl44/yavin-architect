@@ -381,3 +381,55 @@ CREATE TABLE IF NOT EXISTS ing_metrics (
     value  jsonb NOT NULL,
     PRIMARY KEY (job_id, metric)
 );
+
+-- Design sessions (M6): operational state of the session engine. The ledger holds the
+-- session's phase changes, checkpoints, budget, claims, versions, checks and decisions; these
+-- tables hold what the frozen event types cannot (contracts-PROPOSALS P-11): the session's
+-- status and outcome, the human approve/reject decision, the package key, and the agent
+-- messages (which reference gw_calls rows, never duplicate them).
+CREATE TABLE IF NOT EXISTS ses_sessions (
+    project_id      text        NOT NULL REFERENCES projects (project_id),
+    session_id      text        NOT NULL,
+    preset          text        NOT NULL,
+    limits          jsonb       NOT NULL,
+    status          text        NOT NULL,
+    outcome         text,
+    phase           text,
+    round           integer     NOT NULL DEFAULT 0,
+    best_version    text,
+    open_risks      jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    spend           jsonb       NOT NULL DEFAULT '{"tokens": 0, "usd": 0}'::jsonb,
+    package_key     text,
+    brief_source_id text,
+    started_at      text        NOT NULL,
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (project_id, session_id)
+);
+
+-- Every message between the harness and an agent (agent_protocol.schema.json), append-only.
+CREATE TABLE IF NOT EXISTS ag_messages (
+    project_id       text  NOT NULL REFERENCES projects (project_id),
+    msg_id           text  NOT NULL,
+    session_id       text  NOT NULL,
+    task_id          text  NOT NULL,
+    parent_task      text,
+    type             text  NOT NULL,
+    agent            jsonb NOT NULL,
+    ts               text  NOT NULL,
+    body             jsonb NOT NULL,
+    depends_on       jsonb NOT NULL,
+    cost             jsonb NOT NULL,
+    call_ids         jsonb NOT NULL,
+    context_manifest jsonb,
+    context_dropped  jsonb,
+    PRIMARY KEY (project_id, msg_id)
+);
+CREATE INDEX IF NOT EXISTS ag_messages_by_session ON ag_messages (project_id, session_id, ts);
+
+CREATE OR REPLACE TRIGGER ag_messages_no_update_delete
+    BEFORE UPDATE OR DELETE ON ag_messages
+    FOR EACH ROW EXECUTE FUNCTION append_only();
+
+CREATE OR REPLACE TRIGGER ag_messages_no_truncate
+    BEFORE TRUNCATE ON ag_messages
+    FOR EACH STATEMENT EXECUTE FUNCTION append_only();
