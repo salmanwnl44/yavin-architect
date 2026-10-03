@@ -201,9 +201,18 @@ def test_event_id_is_unique_across_projects(arbiter, pool, fingerprint):
     arbiter.submit(PROJECT, source() | {"event_id": ident("evt", "shared")})
     before = fingerprint()
     with pytest.raises(Rejection) as refused:
-        arbiter.submit("p2", candidate("entity.merged", {
-            "kept_id": "a", "merged_ids": ["b"], "method": "human",
-        }) | {"event_id": ident("evt", "shared")})
+        arbiter.submit(
+            "p2",
+            candidate(
+                "entity.merged",
+                {
+                    "kept_id": "a",
+                    "merged_ids": ["b"],
+                    "method": "human",
+                },
+            )
+            | {"event_id": ident("evt", "shared")},
+        )
     assert refused.value.code == "DUPLICATE_EVENT_ID"
     assert refused.value.http_status == 409
     assert fingerprint() == before
