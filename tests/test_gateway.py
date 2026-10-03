@@ -39,6 +39,8 @@ from conftest import PROJECT
 from replay_reference import fixture_events
 
 FAKE_KEY = "sk-ant-fake-key-for-the-secret-hygiene-test-0123456789"
+# a second, distinct fake under the app's own variable name (ARCHITECT_ANTHROPIC_API_KEY)
+APP_FAKE_KEY = "sk-ant-fake-app-key-under-the-architect-name-9876543210"
 
 # The test model table: mock models with made-up prices (usd per million tokens).
 TEST_MODELS: dict[str, Any] = {
@@ -521,6 +523,7 @@ def test_a_key_in_the_environment_never_reaches_rows_logs_or_errors(
     gateway, mock, mock_b, pool, monkeypatch, caplog
 ):
     monkeypatch.setenv("ANTHROPIC_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("ARCHITECT_ANTHROPIC_API_KEY", APP_FAKE_KEY)
     monkeypatch.setenv("OPENAI_COMPAT_API_KEY", FAKE_KEY)
     caplog.set_level(logging.DEBUG, logger="architect.gateway")
     texts: list[str] = []
@@ -542,6 +545,7 @@ def test_a_key_in_the_environment_never_reaches_rows_logs_or_errors(
             texts.append(row["row"])
     texts += [record.getMessage() for record in caplog.records]
     assert texts and all(FAKE_KEY not in text for text in texts)
+    assert all(APP_FAKE_KEY not in text for text in texts)
 
 
 # --- G12: untrusted content

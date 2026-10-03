@@ -847,7 +847,8 @@ the platform to any LLM; no later module imports an LLM SDK or names a model.
   marked "VERIFY against the provider's current pricing page". `exclude_families` filters
   candidates; nothing left is `NoEligibleModel`.
 - **Providers** (`gateway/providers/`): `mock.py` (deterministic, scripted, counts calls;
-  all of CI runs on it), `anthropic.py` (the official SDK, key from `ANTHROPIC_API_KEY`;
+  all of CI runs on it), `anthropic.py` (the official SDK, key from `ARCHITECT_ANTHROPIC_API_KEY`, falling back
+  to `ANTHROPIC_API_KEY`;
   structured output through the API's native `output_config.format` JSON Schema; 429, 529,
   5xx, timeouts and connection failures retryable, other 4xx and refusals not),
   `openai_compat.py` (httpx2 against `{base}/v1/chat/completions`; `response_format`
@@ -911,7 +912,7 @@ the platform to any LLM; no later module imports an LLM SDK or names a model.
 never in a file in the repo:
 
 ```
-$env:ANTHROPIC_API_KEY = "..."           # bash: export ANTHROPIC_API_KEY=...
+$env:ARCHITECT_ANTHROPIC_API_KEY = "..."   # bash: export ARCHITECT_ANTHROPIC_API_KEY=...
 pytest -m live -v
 # L2 (OpenAI-compatible) also needs:
 $env:OPENAI_COMPAT_BASE_URL = "http://localhost:8000"   # and OPENAI_COMPAT_API_KEY if required
@@ -919,6 +920,16 @@ $env:OPENAI_COMPAT_BASE_URL = "http://localhost:8000"   # and OPENAI_COMPAT_API_
 
 L1 makes a tiny completion and a structured round trip on tier-cheap and records tokens and
 usd; L2 does the same through the OpenAI-compatible provider. They have not been run.
+
+**The key's variable (M7 amendment).** The app reads `ARCHITECT_ANTHROPIC_API_KEY` first and
+falls back to `ANTHROPIC_API_KEY` (`gateway/config.py::anthropic_api_key`, used by the
+provider and by `default_providers`). The app's own name keeps the key away from any other
+tool in the same shell that uses `ANTHROPIC_API_KEY` for its own auth. `tests/conftest.py`
+removes `ARCHITECT_ANTHROPIC_API_KEY` from every test not marked `live`, so a real key in a
+developer's shell cannot reach the default gateway of a mock test. One gap is open: the
+guards at the top of L1, L3 and L4 still test `ANTHROPIC_API_KEY` and fail when only the
+app's variable is set. They are existing tests and were left unedited pending the owner's
+go-ahead.
 
 ### Exit tests
 
@@ -1017,8 +1028,8 @@ curl -X POST localhost:8000/v1/projects/P/sources/S/extract
 curl localhost:8000/v1/projects/P/sources ; curl "localhost:8000/v1/projects/P/claims?grade=design_grade"
 ```
 
-L3 (manual): put a short document in `tests/live_docs/` (gitignored), set `ANTHROPIC_API_KEY`
-in the shell, run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
+L3 (manual): put a short document in `tests/live_docs/` (gitignored), set the key in the
+shell (M4, "Live tests"), run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
 
 ### Exit tests
 
@@ -1203,7 +1214,7 @@ Without Docker, any Temporal dev server works (`temporal server start-dev`); the
 one themselves when `ARCHITECT_TEMPORAL_ADDRESS` is unset. Model calls go through the gateway
 as everywhere else: with no key in the environment the worker has only the mock provider.
 
-L4 (manual): `pytest -m live -v -k l4` with `ANTHROPIC_API_KEY` in the shell runs a real
+L4 (manual): `pytest -m live -v -k l4` with the key in the shell (M4, "Live tests") runs a real
 quick session on a tiny brief with a small cap and prints the timeline, gate, risks and usd.
 
 ### Exit tests

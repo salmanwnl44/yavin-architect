@@ -23,6 +23,15 @@ from architect.state import STATE_TABLES
 PROJECT = "p1"
 
 
+@pytest.fixture(autouse=True)
+def _no_app_key_outside_live_tests(request: pytest.FixtureRequest, monkeypatch) -> None:
+    """A real ARCHITECT_ANTHROPIC_API_KEY in the developer's shell must never reach a test that
+    is not marked live: the default gateway would register the real provider and spend money.
+    Tests that need the variable set it themselves."""
+    if "live" not in request.keywords:
+        monkeypatch.delenv("ARCHITECT_ANTHROPIC_API_KEY", raising=False)
+
+
 @pytest.fixture(scope="session")
 def admin() -> Iterator[psycopg.Connection]:
     with psycopg.connect(database_url(), autocommit=True) as conn:

@@ -117,7 +117,8 @@ use); two of them need a real dev server and start one themselves unless
 `ARCHITECT_TEMPORAL_ADDRESS` names one, as CI does.
 
 Live provider tests are marked `live` and deselected by default; `pytest -m live -v` with a
-key in the shell runs them.
+key in the shell runs them. The app reads its key from `ARCHITECT_ANTHROPIC_API_KEY`, falling
+back to `ANTHROPIC_API_KEY`.
 
 Tests create a throwaway schema per test inside the database named by
 `ARCHITECT_DATABASE_URL` (default `postgresql://architect:architect@localhost:5432/architect`).
