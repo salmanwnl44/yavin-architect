@@ -80,10 +80,18 @@ def claim_committed(body: dict[str, Any], **payload: Any) -> Event:
 
 
 def patch(base: str) -> dict[str, Any]:
+    """A patch that adds one valid component to `base`, a different one for each base."""
+    fencer = {
+        "id": ident("cmp", f"fencer{base[-2:]}"),
+        "name": "Fencer",
+        "kind": "service",
+        "stateful": False,
+        "requirement_refs": [],
+    }
     return {
         "base_version": base,
         "rationale": "add fencing epochs to the lease protocol",
-        "ops": [{"op": "add_element", "element_type": "component", "element": {"name": "Fencer"}}],
+        "ops": [{"op": "add_element", "element_type": "components", "element": fencer}],
     }
 
 

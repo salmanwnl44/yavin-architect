@@ -9,10 +9,12 @@ from __future__ import annotations
 import subprocess
 import sys
 
+import psycopg
 import pytest
 
 from architect.cli import main
 from architect.contracts import contracts_dir
+from replay_reference import normalized, reference
 
 FIXTURE_DIR = contracts_dir() / "fixture"
 FIXTURE_LEDGER = FIXTURE_DIR / "fixture_ledger.jsonl"
@@ -51,3 +53,26 @@ def test_rebuild_state_after_the_fixture_ingest_reports_zero_diff(ingested, caps
     out = capsys.readouterr().out
     assert code == 0, out
     assert "diff vs previous state: empty" in out
+
+
+# M1.1 exit test A3: the Arbiter folds the fixture's model itself, and a rebuild folds it back
+def test_the_arbiters_head_model_is_what_replay_folds_before_and_after_a_rebuild(ingested, capsys):
+    final_model = reference()["final_model"]
+
+    def head_model() -> dict:
+        with psycopg.connect(ingested) as conn:
+            (model,) = conn.execute(
+                "SELECT v.model FROM arb_model_heads h JOIN arb_model_versions v "
+                "ON v.project_id = h.project_id AND v.version_id = h.head_version "
+                "WHERE h.project_id = 'fix'"
+            ).fetchone()
+        return model
+
+    # The exit test ingests into project `fix`; the fixture names its own project.
+    before = head_model()
+    assert before["project_id"] == "fix"
+    assert normalized(before | {"project_id": final_model["project_id"]}) == normalized(final_model)
+
+    assert main(["--database-url", ingested, "rebuild-state", "--project", "fix"]) == 0
+    assert "arb_model_versions: 0 stale, 0 missing" in capsys.readouterr().out
+    assert head_model() == before

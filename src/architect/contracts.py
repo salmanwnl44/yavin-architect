@@ -52,6 +52,7 @@ class Contracts:
     schemas: dict[str, dict[str, Any]]
     event: Draft202012Validator
     claim: Draft202012Validator
+    model: Draft202012Validator
     model_patch: Draft202012Validator
     objection: Draft202012Validator
     check: Draft202012Validator
@@ -122,6 +123,7 @@ def load_contracts() -> Contracts:
         schemas=schemas,
         event=validator("ledger_events.schema.json"),
         claim=validator("claim.schema.json"),
+        model=validator("system_model.schema.json"),
         model_patch=validator("agent_protocol.schema.json", "/$defs/ModelPatchProposal"),
         objection=validator("agent_protocol.schema.json", "/$defs/Objection"),
         check=validator("check_catalog.schema.json", "/$defs/Check"),

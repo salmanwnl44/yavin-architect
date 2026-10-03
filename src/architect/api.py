@@ -1,4 +1,4 @@
-"""HTTP surface of the ledger. Every write goes through the Arbiter."""
+"""HTTP surface of the ledger and its read models. Every write goes through the Arbiter."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from architect import __version__, ledger
+from architect import __version__, ledger, projector, readmodel
 from architect.arbiter import Arbiter
 from architect.contracts import json_path, load_contracts
 from architect.db import ensure_schema, open_pool
@@ -106,5 +106,79 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def get_head(request: Request, project_id: str) -> dict[str, Any]:
         require_project(request, project_id)
         return ledger.head(request.app.state.pool, project_id)
+
+    # The read models (M2). These answer from proj_* only, so they are as fresh as the
+    # projector; projections/status says how far behind that is.
+
+    @app.get("/v1/projects/{project_id}/models/head")
+    def get_head_model(request: Request, project_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        version = readmodel.head_model(request.app.state.pool, project_id)
+        if version is None:
+            raise Rejection(
+                "MODEL_VERSION_NOT_FOUND", f"project {project_id!r} has no projected model version"
+            )
+        return version
+
+    @app.get("/v1/projects/{project_id}/models/{version_id}")
+    def get_model(request: Request, project_id: str, version_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        version = readmodel.model_version(request.app.state.pool, project_id, version_id)
+        if version is None:
+            raise Rejection(
+                "MODEL_VERSION_NOT_FOUND",
+                f"no projected model version {version_id} in project {project_id!r}",
+            )
+        return version
+
+    @app.get("/v1/projects/{project_id}/claims")
+    def list_claims(
+        request: Request,
+        project_id: str,
+        status: str | None = None,
+        load_bearing: bool | None = None,
+        as_of_seq: Annotated[int | None, Query(ge=0)] = None,
+    ) -> dict[str, Any]:
+        """Claims in commit order. as_of_seq answers "what did we believe once seq N landed"."""
+        require_project(request, project_id)
+        statuses = load_contracts().schemas["claim.schema.json"]["$defs"]["EpistemicStatus"]["enum"]
+        if status is not None and status not in statuses:
+            raise Rejection(
+                "MALFORMED_REQUEST", f"status must be one of {', '.join(statuses)}", "$.status"
+            )
+        claims = readmodel.list_claims(
+            request.app.state.pool,
+            project_id,
+            status=status,
+            load_bearing=load_bearing,
+            as_of_seq=as_of_seq,
+        )
+        return {"claims": claims, "as_of_seq": as_of_seq}
+
+    @app.get("/v1/projects/{project_id}/claims/{claim_id}")
+    def get_claim(request: Request, project_id: str, claim_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        claim = readmodel.claim_detail(request.app.state.pool, project_id, claim_id)
+        if claim is None:
+            raise Rejection(
+                "CLAIM_NOT_FOUND", f"no projected claim {claim_id} in project {project_id!r}"
+            )
+        return claim
+
+    @app.get("/v1/projects/{project_id}/elements/{element_id}/why")
+    def get_why(request: Request, project_id: str, element_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        trace = readmodel.why(request.app.state.pool, project_id, element_id)
+        if trace is None:
+            raise Rejection(
+                "ELEMENT_NOT_FOUND",
+                f"no element {element_id} in the projected head model of project {project_id!r}",
+            )
+        return trace
+
+    @app.get("/v1/projects/{project_id}/projections/status")
+    def get_projection_status(request: Request, project_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        return projector.status(request.app.state.pool, project_id)
 
     return app

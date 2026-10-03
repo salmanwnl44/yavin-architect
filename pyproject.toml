@@ -45,4 +45,4 @@ extend-exclude = ["phase0-contracts"]
 select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["architect", "builders", "conftest"]
+known-first-party = ["architect", "builders", "conftest", "replay_reference"]

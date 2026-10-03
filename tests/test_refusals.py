@@ -5,6 +5,7 @@ Exit test 2 is the block marked as such; the rest covers every other rejection c
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -468,3 +469,138 @@ def test_candidate_must_be_an_object(client):
     response = client.post(EVENTS, json=[1, 2, 3])
     assert response.status_code == 422
     assert response.json()["code"] == "MALFORMED_REQUEST"
+
+
+# --- Model versions are folded by the Arbiter (M1.1) ------------------------------------
+
+
+def component(name: str, **fields: Any) -> dict[str, Any]:
+    return {
+        "id": ident("cmp", name),
+        "name": name.title(),
+        "kind": "service",
+        "stateful": False,
+        "requirement_refs": [],
+    } | fields
+
+
+def add(element: dict[str, Any], element_type: str = "components") -> dict[str, Any]:
+    return {"op": "add_element", "element_type": element_type, "element": element}
+
+
+def patch_events(version: str, base: str, *ops: dict[str, Any]) -> list[dict[str, Any]]:
+    """The same patch as a proposal and as a commit: both are held to the same rules."""
+    body = {"base_version": base, "rationale": "test", "ops": list(ops)}
+    proposed = {"proposal_id": f"prop-{version}", "base_version": base, "patch": body}
+    committed = {"version_id": version, "base_version": base, "patch": body}
+    return [
+        candidate("model.patch_proposed", proposed, actor=AGENT),
+        candidate("model.patch_committed", committed),
+    ]
+
+
+@pytest.fixture
+def models(fingerprint):
+    """version_id -> the model the Arbiter holds for it."""
+
+    def models() -> dict[str, dict[str, Any]]:
+        rows = [json.loads(row) for row in fingerprint()["arb_model_versions"]]
+        return {row["version_id"]: row["model"] for row in rows}
+
+    return models
+
+
+def test_a_valid_patch_is_accepted_and_its_result_becomes_the_head_model(commit, models):
+    router, store = component("router"), component("store", kind="datastore", stateful=True)
+    depends = {"from": router["id"], "to": store["id"], "kind": "sync"}
+    link = {"link_type": "depends_on", "link": depends}
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    proposed, committed = patch_events(MV2, MV1, add(router), add(store), {"op": "add_link"} | link)
+    commit(proposed)
+    commit(committed)
+    rename = {
+        "op": "update_element",
+        "element_type": "components",
+        "element_id": router["id"],
+        "element": {"name": "Write Router"},
+    }
+    drop = {"op": "remove_element", "element_type": "components", "element_id": store["id"]}
+    commit(patch_events(MV3, MV2, rename, drop, {"op": "remove_link"} | link)[1])
+
+    held = models()
+    assert held[MV1] == {"version_id": MV1, "project_id": PROJECT, "elements": {}, "links": {}}
+    assert held[MV2] == {
+        "version_id": MV2,
+        "project_id": PROJECT,
+        "elements": {"components": [router, store]},
+        "links": {"depends_on": [depends]},
+    }
+    assert held[MV3]["elements"] == {"components": [router | {"name": "Write Router"}]}
+    assert held[MV3]["links"] == {"depends_on": []}
+
+
+def test_a_version_created_from_a_parent_copies_the_parents_model(client, commit, models):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    commit(patch_events(MV2, MV1, add(component("router")))[1])
+    mv4 = ident("mv", "v4")
+    commit(candidate("model.version_created", {"version_id": MV3, "parent": MV2}))
+    commit(candidate("model.version_created", {"version_id": mv4, "parent": MV1}))
+
+    held = models()
+    assert held[MV3] == held[MV2] | {"version_id": MV3}
+    assert held[MV3]["elements"]["components"] == [component("router")]
+    assert held[mv4] == held[MV1] | {"version_id": mv4}, "a parent need not be the head"
+    assert client.get(f"/v1/projects/{PROJECT}/head").json()["model_head_version"] == mv4
+
+
+def test_patch_whose_target_is_not_in_the_model(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    ghost = ident("cmp", "ghost")
+    update = {
+        "op": "update_element",
+        "element_type": "components",
+        "element_id": ghost,
+        "element": {"name": "x"},
+    }
+    remove = {"op": "remove_element", "element_type": "components", "element_id": ghost}
+    for missing in (update, remove):
+        for event in patch_events(MV2, MV1, add(component("router")), missing):
+            body = refuse(event, 422, "PATCH_TARGET_MISSING", "$.payload.patch.ops[1]")
+            assert ghost in body["detail"]
+
+
+def test_patch_that_would_not_leave_a_valid_model(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    for op, at in (
+        (add({"name": "Fencer"}), "$.elements.components[0]"),
+        (add(component("router"), element_type="component"), "$.elements"),
+        (add(component("router", kind="teapot")), "$.elements.components[0].kind"),
+    ):
+        for event in patch_events(MV2, MV1, op):
+            refuse(event, 422, "INVALID_MODEL_RESULT", at)
+
+
+def test_reusing_a_model_version_id(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    reused_by_patch = patch_events(MV1, MV1, add(component("router")))[1]
+    refuse(reused_by_patch, 409, "DUPLICATE_VERSION_ID", "$.payload.version_id")
+
+    commit(patch_events(MV2, MV1, add(component("router")))[1])
+    for version in (MV1, MV2):
+        reused = candidate("model.version_created", {"version_id": version, "parent": MV2})
+        refuse(reused, 409, "DUPLICATE_VERSION_ID", "$.payload.version_id")
+
+
+def test_a_patch_op_without_the_fields_its_kind_needs(commit, refuse):
+    commit(candidate("model.version_created", {"version_id": MV1}))
+    for event in patch_events(MV2, MV1, add(component("router")), {"op": "add_element"}):
+        refuse(event, 422, "SCHEMA_INVALID", "$.payload.patch.ops[1]")
+
+
+def test_a_version_id_the_system_model_cannot_carry(refuse):
+    refuse(
+        candidate("model.version_created", {"version_id": "v1"}),
+        422,
+        "INVALID_MODEL_RESULT",
+        "$.version_id",
+    )

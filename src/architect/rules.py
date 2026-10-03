@@ -15,6 +15,14 @@ from jsonschema import Draft202012Validator
 
 from architect.contracts import first_error, json_path, load_contracts
 from architect.errors import Rejection
+from architect.model_fold import (
+    MalformedOp,
+    Model,
+    PatchTargetMissing,
+    apply_patch,
+    child_of,
+    empty_model,
+)
 from architect.state import ArbiterState
 
 Event = dict[str, Any]
@@ -163,7 +171,37 @@ def _apply_claim_retracted(event: Event, state: ArbiterState) -> None:
     state.set_claim_status(event["payload"]["claim_id"], "retracted")
 
 
+# model versions: the Arbiter folds every version, so no event that fails to produce a
+# valid System Model is ever committed (architect.model_fold is the one fold).
+def _require_new_version(state: ArbiterState, version_id: str) -> None:
+    if state.model(version_id) is not None:
+        raise Rejection(
+            "DUPLICATE_VERSION_ID",
+            f"model version {version_id} is already committed in this project",
+            "$.payload.version_id",
+        )
+
+
+def _require_valid_model(model: Model, produced_by: str) -> None:
+    """json_path locates the violation in the resulting model, not in the event."""
+    error = first_error(load_contracts().model, model)
+    if error is not None:
+        raise Rejection(
+            "INVALID_MODEL_RESULT",
+            f"{produced_by} would not leave a valid system model: {error.message}",
+            json_path(error.path),
+        )
+
+
 # model.version_created
+def _created_model(event: Event, state: ArbiterState) -> Model:
+    payload = event["payload"]
+    parent = payload.get("parent")
+    if parent is None:
+        return empty_model(event["project_id"], payload["version_id"])
+    return child_of(state.model(parent), payload["version_id"])
+
+
 def _check_model_version_created(event: Event, state: ArbiterState) -> None:
     parent = event["payload"].get("parent")
     if parent is None:
@@ -174,16 +212,18 @@ def _check_model_version_created(event: Event, state: ArbiterState) -> None:
                 f"a genesis version needs an empty model; the head is already {head}",
                 "$.payload",
             )
-    elif not state.model_version_exists(parent):
+    elif state.model(parent) is None:
         raise Rejection(
             "UNKNOWN_MODEL_VERSION",
             f"parent {parent} is not a committed model version in this project",
             "$.payload.parent",
         )
+    _require_new_version(state, event["payload"]["version_id"])
+    _require_valid_model(_created_model(event, state), "this version")
 
 
 def _apply_model_version_created(event: Event, state: ArbiterState) -> None:
-    state.add_model_version(event["payload"]["version_id"])
+    state.add_model_version(event["payload"]["version_id"], _created_model(event, state))
 
 
 # model.patch_proposed / model.patch_committed
@@ -211,18 +251,44 @@ def _check_patch(event: Event, state: ArbiterState) -> None:
         )
 
 
+def _patched_model(event: Event, state: ArbiterState) -> Model:
+    """The model the event's patch produces from its base, which _check_patch found to be the
+    head. A proposal has no version_id, so its result keeps the base's."""
+    payload = event["payload"]
+    return apply_patch(
+        state.model(payload["base_version"]), payload["patch"], payload.get("version_id")
+    )
+
+
+def _require_patch_applies(event: Event, state: ArbiterState) -> None:
+    try:
+        model = _patched_model(event, state)
+    except PatchTargetMissing as error:
+        raise Rejection(
+            "PATCH_TARGET_MISSING", error.message, f"$.payload.patch.ops[{error.index}]"
+        ) from error
+    except MalformedOp as error:
+        raise Rejection(
+            "SCHEMA_INVALID", f"patch op: {error.message}", f"$.payload.patch.ops[{error.index}]"
+        ) from error
+    _require_valid_model(model, "this patch")
+
+
 def _check_model_patch_proposed(event: Event, state: ArbiterState) -> None:
     _check_patch(event, state)
     _require_new_proposal(event, state)
+    _require_patch_applies(event, state)
 
 
 def _check_model_patch_committed(event: Event, state: ArbiterState) -> None:
     _check_patch(event, state)
+    _require_new_version(state, event["payload"]["version_id"])
     proposal = event["payload"].get("from_proposal")
     if proposal is not None and state.proposal_kind(proposal) != "model_patch":
         raise Rejection(
             "UNKNOWN_PROPOSAL", f"no model patch proposal {proposal}", "$.payload.from_proposal"
         )
+    _require_patch_applies(event, state)
 
 
 def _apply_model_patch_proposed(event: Event, state: ArbiterState) -> None:
@@ -230,7 +296,7 @@ def _apply_model_patch_proposed(event: Event, state: ArbiterState) -> None:
 
 
 def _apply_model_patch_committed(event: Event, state: ArbiterState) -> None:
-    state.add_model_version(event["payload"]["version_id"])
+    state.add_model_version(event["payload"]["version_id"], _patched_model(event, state))
 
 
 # objection.raised
