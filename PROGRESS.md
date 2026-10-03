@@ -7,13 +7,13 @@
 | M0 scaffold | done |
 | M1 ledger + Arbiter | **done**: all seven exit tests green in CI against the Phase 0 fixture |
 | C1 contracts v1.0 | **done**: proposals P-1 to P-5 applied, contracts FROZEN v1.0, CI green |
-| M2 projections | parked: written on the local branch `m2-projections`, not run against a database, not merged |
+| M1.1 Arbiter hardening | **done**: the Arbiter folds every model version and refuses what cannot be folded |
+| M2 projections | **done**: all nine exit tests green in CI; `proj_*` read models, projector, read API |
 
-M1 is complete, and module C1 froze the contracts at v1.0. The owner decided the five
-proposals in `contracts-PROPOSALS.md`; they were applied in one sanctioned edit to
-`phase0-contracts/` (see its `CHANGELOG.md`) and the Arbiter enforces the new rules. CI ran
-the whole suite on `postgres:16` afterwards: 111 passed, no failures. See "Exit tests" for
-the output and "Contracts v1.0" for C1's exit tests.
+M1 is complete, module C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap,
+and M2 built the read side. CI runs the whole suite on `postgres:16`: 155 passed, none
+skipped. See "Exit tests" for the output, "Contracts v1.0" for C1, and the M1.1 and M2
+sections below. M3 (the checks engine) has not been started.
 
 ## M0: scaffold
 
@@ -32,8 +32,9 @@ the output and "Contracts v1.0" for C1's exit tests.
 
 ### What landed
 
-- **Schema** (`src/architect/schema.sql`): `projects`, `events`, and the six `arb_*` state
-  tables. A trigger on `events` raises on UPDATE, DELETE and TRUNCATE.
+- **Schema** (`src/architect/schema.sql`): `projects`, `events`, the six `arb_*` state
+  tables and, since M2, the eleven `proj_*` read-model tables. A trigger on `events` raises
+  on UPDATE, DELETE and TRUNCATE.
 - **Arbiter** (`arbiter.py`): the only writer. One transaction per commit, serialized per
   project by `pg_advisory_xact_lock(hashtextextended(project_id, 0))`: idempotency lookup,
   stamp `seq` (dense from 0) and `prev_hash`, schema gate, per-type rules, insert, state fold.
@@ -52,9 +53,9 @@ Body is `{code, detail, json_path?}`.
 
 | HTTP | Codes |
 | --- | --- |
-| 422 | `SCHEMA_INVALID`, `CLAIM_ID_MISMATCH`, `UNKNOWN_SOURCE`, `UNKNOWN_PROPOSAL`, `UNKNOWN_CLAIM`, `STATUS_MISMATCH`, `UNKNOWN_CAUSE_EVENT`, `PROMOTION_FORBIDDEN`, `PATCH_BASE_MISMATCH`, `UNKNOWN_MODEL_VERSION`, `OBJECTION_NOT_OPEN`, `WAIVER_NOT_HUMAN`, `PROJECT_MISMATCH`, `MALFORMED_REQUEST` |
-| 409 | `BASE_MOVED`, `DUPLICATE_SOURCE`, `DUPLICATE_CLAIM_ID`, `DUPLICATE_PROPOSAL`, `DUPLICATE_EVENT_ID`, `DUPLICATE_GENESIS`, `DUPLICATE_PROJECT` |
-| 404 | `UNKNOWN_PROJECT`, `UNKNOWN_EVENT` |
+| 422 | `SCHEMA_INVALID`, `CLAIM_ID_MISMATCH`, `UNKNOWN_SOURCE`, `UNKNOWN_PROPOSAL`, `UNKNOWN_CLAIM`, `STATUS_MISMATCH`, `UNKNOWN_CAUSE_EVENT`, `PROMOTION_FORBIDDEN`, `PATCH_BASE_MISMATCH`, `UNKNOWN_MODEL_VERSION`, `PATCH_TARGET_MISSING`, `INVALID_MODEL_RESULT`, `OBJECTION_NOT_OPEN`, `WAIVER_NOT_HUMAN`, `PROJECT_MISMATCH`, `MALFORMED_REQUEST` |
+| 409 | `BASE_MOVED`, `DUPLICATE_SOURCE`, `DUPLICATE_CLAIM_ID`, `DUPLICATE_PROPOSAL`, `DUPLICATE_VERSION_ID`, `DUPLICATE_EVENT_ID`, `DUPLICATE_GENESIS`, `DUPLICATE_PROJECT` |
+| 404 | `UNKNOWN_PROJECT`, `UNKNOWN_EVENT`, and on the read API `MODEL_VERSION_NOT_FOUND`, `CLAIM_NOT_FOUND`, `ELEMENT_NOT_FOUND` |
 
 Codes beyond the M1 brief: `DUPLICATE_EVENT_ID` (client `event_id` already committed),
 `DUPLICATE_GENESIS` (a `model.version_created` without `parent` when a head exists),
@@ -64,6 +65,13 @@ body is not what the endpoint takes), `DUPLICATE_PROJECT`, `UNKNOWN_PROJECT`, `U
 Codes added with contracts v1.0: `UNKNOWN_MODEL_VERSION` (the `parent` of a
 `model.version_created` is not a committed model version in the project) and
 `DUPLICATE_PROPOSAL` (a `proposal_id` is reused, by either kind of proposal).
+
+Codes added with M1.1: `PATCH_TARGET_MISSING` (an `update_element` or `remove_element` names
+an element the head model does not have; `json_path` is the op), `INVALID_MODEL_RESULT` (the
+patch, or the created version, would not leave a valid system model; here `json_path`
+locates the violation in the resulting model, not in the event) and `DUPLICATE_VERSION_ID`
+(a `model.version_created` or `model.patch_committed` reuses a `version_id`). A patch op
+without the fields its kind needs is `SCHEMA_INVALID` at that op.
 
 ### Decisions worth knowing
 
@@ -113,11 +121,18 @@ pytest -v
 # run it
 architect init-db
 architect serve --port 8000
+architect project                      # the projector worker; --once to catch up and exit
 architect ingest phase0-contracts/fixture/fixture_ledger.jsonl --project fix
 architect dump --project fix -o dump.jsonl
 python3 phase0-contracts/fixture/replay.py dump.jsonl
 architect verify --project fix
 architect rebuild-state --project fix
+architect rebuild-projections --project fix     # drop + rebuild proj_*, prints the content hash
+curl localhost:8000/v1/projects/fix/models/head
+curl localhost:8000/v1/projects/fix/claims?as_of_seq=31
+curl localhost:8000/v1/projects/fix/claims/clm_FIXPAYLOAD1
+curl localhost:8000/v1/projects/fix/elements/cmp_FIXSHARD01/why
+curl localhost:8000/v1/projects/fix/projections/status
 ```
 
 Tests create one throwaway schema per test inside the database that
@@ -140,9 +155,9 @@ Exit test 1 ingests the fixture through the Arbiter into project `fix`, dumps it
 diff. `test_cli.py` runs the same two paths on a hand-written 24-event ledger covering all 19
 event types (`tests/builders.py::sample_ledger`).
 
-CI output, 2026-10-02, GitHub Actions run 36967121987 on commit `806341c`
-(https://github.com/salmanwnl44/yavin-architect/actions/runs/36967121987): ubuntu-latest,
-Python 3.11.16, PostgreSQL 16.15 (`postgres:16`), contracts v1.0. Every step succeeded.
+CI output, 2026-10-03, GitHub Actions run 37099265991 on commit `23aec9c`
+(https://github.com/salmanwnl44/yavin-architect/actions/runs/37099265991): ubuntu-latest,
+Python 3.11.16, PostgreSQL 16.15 (`postgres:16`), contracts v1.0, M1.1 and M2. Every step succeeded.
 
 ```
 $ python3 phase0-contracts/validate.py
@@ -194,121 +209,165 @@ rootdir: /home/runner/work/yavin-architect/yavin-architect
 configfile: pyproject.toml
 testpaths: tests
 plugins: anyio-4.15.1
-collecting ... collected 111 items
+collecting ... collected 155 items
 
 tests/test_api.py::test_healthz PASSED                                   [  0%]
 tests/test_api.py::test_create_project PASSED                            [  1%]
-tests/test_api.py::test_submit_returns_201_then_200_replayed PASSED      [  2%]
-tests/test_api.py::test_the_whole_sample_session_commits PASSED          [  3%]
-tests/test_api.py::test_events_page_in_seq_order PASSED                  [  4%]
-tests/test_api.py::test_page_parameters_are_validated PASSED             [  5%]
-tests/test_api.py::test_get_event_by_id PASSED                           [  6%]
-tests/test_api.py::test_head_summarizes_the_arbiter_state PASSED         [  7%]
-tests/test_api.py::test_head_counts_open_objections PASSED               [  8%]
-tests/test_api.py::test_unknown_project_is_404_everywhere PASSED         [  9%]
-tests/test_arbiter.py::test_every_event_type_has_a_rule PASSED           [  9%]
-tests/test_arbiter.py::test_first_commit_is_seq_zero_without_prev_hash PASSED [ 10%]
-tests/test_arbiter.py::test_arbiter_mints_event_id_and_ts_when_absent PASSED [ 11%]
-tests/test_arbiter.py::test_client_event_id_and_ts_are_kept_verbatim PASSED [ 12%]
-tests/test_arbiter.py::test_seq_is_dense_and_each_event_hashes_its_predecessor PASSED [ 13%]
-tests/test_arbiter.py::test_projects_are_sequenced_independently PASSED  [ 14%]
-tests/test_arbiter.py::test_committed_events_read_back_identically PASSED [ 15%]
-tests/test_arbiter.py::test_idempotent_resubmission_returns_the_original_event PASSED [ 16%]
-tests/test_arbiter.py::test_a_retry_wins_over_rules_that_its_first_commit_changed PASSED [ 17%]
-tests/test_arbiter.py::test_parallel_submissions_get_dense_seq_and_a_valid_chain PASSED [ 18%]
-tests/test_arbiter.py::test_parallel_retries_of_one_candidate_commit_once PASSED [ 18%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET payload = '{}'::jsonb] PASSED [ 19%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET seq = seq + 100] PASSED [ 20%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[DELETE FROM events] PASSED [ 21%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[TRUNCATE events] PASSED [ 22%]
-tests/test_arbiter.py::test_a_failure_before_commit_rolls_back_event_and_state PASSED [ 23%]
-tests/test_arbiter.py::test_the_hook_runs_after_both_writes PASSED       [ 24%]
-tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[seq] PASSED [ 25%]
-tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[prev_hash] PASSED [ 26%]
-tests/test_arbiter.py::test_unknown_project_is_refused PASSED            [ 27%]
-tests/test_arbiter.py::test_event_id_is_unique_across_projects PASSED    [ 27%]
-tests/test_arbiter.py::test_unstorable_json_is_a_typed_rejection PASSED  [ 28%]
-tests/test_architecture.py::test_only_the_arbiter_writes_events PASSED   [ 29%]
-tests/test_architecture.py::test_no_code_path_updates_or_deletes_events PASSED [ 30%]
-tests/test_cli.py::test_ingest_then_dump_round_trips_the_ledger PASSED   [ 31%]
-tests/test_cli.py::test_ingest_is_idempotent PASSED                      [ 32%]
-tests/test_cli.py::test_a_dump_can_be_ingested_into_a_fresh_database_project PASSED [ 33%]
-tests/test_cli.py::test_ingest_stops_at_the_first_rejection_with_the_typed_error PASSED [ 34%]
-tests/test_cli.py::test_dump_to_stdout PASSED                            [ 35%]
-tests/test_cli.py::test_verify_reports_a_healthy_chain PASSED            [ 36%]
-tests/test_cli.py::test_verify_reports_a_tampered_event PASSED           [ 36%]
-tests/test_cli.py::test_rebuild_state_reports_zero_diff_on_a_healthy_ledger PASSED [ 37%]
-tests/test_cli.py::test_rebuild_state_repairs_and_reports_drift PASSED   [ 38%]
-tests/test_cli.py::test_dropping_the_state_tables_loses_nothing PASSED   [ 39%]
-tests/test_cli.py::test_rebuild_only_touches_its_own_project PASSED      [ 40%]
-tests/test_cli.py::test_commands_need_an_existing_project[dump] PASSED   [ 41%]
-tests/test_cli.py::test_commands_need_an_existing_project[verify] PASSED [ 42%]
-tests/test_cli.py::test_commands_need_an_existing_project[rebuild-state] PASSED [ 43%]
-tests/test_cli.py::test_console_entrypoint PASSED                        [ 44%]
-tests/test_contracts.py::test_all_five_schemas_meta_validate PASSED      [ 45%]
-tests/test_contracts.py::test_every_schema_id_is_a_v1_id PASSED          [ 45%]
-tests/test_contracts.py::test_the_contract_scripts_exit_zero[validate.py-RESULT: ALL GREEN] PASSED [ 46%]
-tests/test_contracts.py::test_the_contract_scripts_exit_zero[fixture/replay.py-RESULT: REPLAY GREEN] PASSED [ 47%]
-tests/test_contracts.py::test_event_types_match_the_payload_dispatch PASSED [ 48%]
-tests/test_contracts.py::test_event_error_reports_the_branch_for_the_events_own_type PASSED [ 49%]
-tests/test_contracts.py::test_formats_are_assertions PASSED              [ 50%]
-tests/test_contracts.py::test_embedded_validators_resolve_their_defs PASSED [ 51%]
-tests/test_contracts.py::test_json_path_formatting PASSED                [ 52%]
-tests/test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green PASSED [ 53%]
-tests/test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff PASSED [ 54%]
-tests/test_refusals.py::test_documented_claim_without_evidence PASSED    [ 54%]
-tests/test_refusals.py::test_load_bearing_assumption_without_verification_plan PASSED [ 55%]
-tests/test_refusals.py::test_promotion_to_measured_needs_an_experiment_as_cause PASSED [ 56%]
-tests/test_refusals.py::test_status_change_with_the_wrong_from PASSED    [ 57%]
-tests/test_refusals.py::test_waiver_signed_by_an_agent PASSED            [ 58%]
-tests/test_refusals.py::test_evidence_citing_an_uningested_source PASSED [ 59%]
-tests/test_refusals.py::test_patch_on_a_stale_base PASSED                [ 60%]
-tests/test_refusals.py::test_resolving_an_objection_that_was_never_raised PASSED [ 61%]
-tests/test_refusals.py::test_objection_without_a_falsifiable_test PASSED [ 62%]
-tests/test_refusals.py::test_duplicate_source PASSED                     [ 63%]
-tests/test_refusals.py::test_proposed_claim_must_be_a_valid_claim PASSED [ 63%]
-tests/test_refusals.py::test_claim_id_mismatch PASSED                    [ 64%]
-tests/test_refusals.py::test_duplicate_claim_id PASSED                   [ 65%]
-tests/test_refusals.py::test_claim_from_an_unknown_proposal PASSED       [ 66%]
-tests/test_refusals.py::test_a_patch_proposal_is_not_a_claim_proposal PASSED [ 67%]
-tests/test_refusals.py::test_claim_and_patch_proposals_with_distinct_ids_are_accepted PASSED [ 68%]
-tests/test_refusals.py::test_a_proposal_id_is_used_once_across_both_kinds PASSED [ 69%]
-tests/test_refusals.py::test_formats_inside_embedded_objects_are_enforced PASSED [ 70%]
-tests/test_refusals.py::test_status_change_of_an_unknown_claim PASSED    [ 71%]
-tests/test_refusals.py::test_status_change_with_an_unknown_cause_event PASSED [ 72%]
-tests/test_refusals.py::test_a_cause_event_from_another_project_is_unknown PASSED [ 72%]
-tests/test_refusals.py::test_promotion_to_observed_is_guarded_too PASSED [ 73%]
-tests/test_refusals.py::test_retracting_an_unknown_claim PASSED          [ 74%]
-tests/test_refusals.py::test_second_genesis_version PASSED               [ 75%]
-tests/test_refusals.py::test_version_created_with_a_committed_parent_is_accepted PASSED [ 76%]
-tests/test_refusals.py::test_version_created_with_an_unknown_parent PASSED [ 77%]
-tests/test_refusals.py::test_a_parent_version_from_another_project_is_unknown PASSED [ 78%]
-tests/test_refusals.py::test_patch_must_be_a_valid_model_patch PASSED    [ 79%]
-tests/test_refusals.py::test_patch_base_mismatch PASSED                  [ 80%]
+tests/test_api.py::test_submit_returns_201_then_200_replayed PASSED      [  1%]
+tests/test_api.py::test_the_whole_sample_session_commits PASSED          [  2%]
+tests/test_api.py::test_events_page_in_seq_order PASSED                  [  3%]
+tests/test_api.py::test_page_parameters_are_validated PASSED             [  3%]
+tests/test_api.py::test_get_event_by_id PASSED                           [  4%]
+tests/test_api.py::test_head_summarizes_the_arbiter_state PASSED         [  5%]
+tests/test_api.py::test_head_counts_open_objections PASSED               [  5%]
+tests/test_api.py::test_unknown_project_is_404_everywhere PASSED         [  6%]
+tests/test_arbiter.py::test_every_event_type_has_a_rule PASSED           [  7%]
+tests/test_arbiter.py::test_first_commit_is_seq_zero_without_prev_hash PASSED [  7%]
+tests/test_arbiter.py::test_arbiter_mints_event_id_and_ts_when_absent PASSED [  8%]
+tests/test_arbiter.py::test_client_event_id_and_ts_are_kept_verbatim PASSED [  9%]
+tests/test_arbiter.py::test_seq_is_dense_and_each_event_hashes_its_predecessor PASSED [  9%]
+tests/test_arbiter.py::test_projects_are_sequenced_independently PASSED  [ 10%]
+tests/test_arbiter.py::test_committed_events_read_back_identically PASSED [ 10%]
+tests/test_arbiter.py::test_idempotent_resubmission_returns_the_original_event PASSED [ 11%]
+tests/test_arbiter.py::test_a_retry_wins_over_rules_that_its_first_commit_changed PASSED [ 12%]
+tests/test_arbiter.py::test_parallel_submissions_get_dense_seq_and_a_valid_chain PASSED [ 12%]
+tests/test_arbiter.py::test_parallel_retries_of_one_candidate_commit_once PASSED [ 13%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET payload = '{}'::jsonb] PASSED [ 14%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET seq = seq + 100] PASSED [ 14%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[DELETE FROM events] PASSED [ 15%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[TRUNCATE events] PASSED [ 16%]
+tests/test_arbiter.py::test_a_failure_before_commit_rolls_back_event_and_state PASSED [ 16%]
+tests/test_arbiter.py::test_the_hook_runs_after_both_writes PASSED       [ 17%]
+tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[seq] PASSED [ 18%]
+tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[prev_hash] PASSED [ 18%]
+tests/test_arbiter.py::test_unknown_project_is_refused PASSED            [ 19%]
+tests/test_arbiter.py::test_event_id_is_unique_across_projects PASSED    [ 20%]
+tests/test_arbiter.py::test_unstorable_json_is_a_typed_rejection PASSED  [ 20%]
+tests/test_architecture.py::test_only_the_arbiter_writes_events PASSED   [ 21%]
+tests/test_architecture.py::test_no_code_path_updates_or_deletes_events PASSED [ 21%]
+tests/test_cli.py::test_ingest_then_dump_round_trips_the_ledger PASSED   [ 22%]
+tests/test_cli.py::test_ingest_is_idempotent PASSED                      [ 23%]
+tests/test_cli.py::test_a_dump_can_be_ingested_into_a_fresh_database_project PASSED [ 23%]
+tests/test_cli.py::test_ingest_stops_at_the_first_rejection_with_the_typed_error PASSED [ 24%]
+tests/test_cli.py::test_dump_to_stdout PASSED                            [ 25%]
+tests/test_cli.py::test_verify_reports_a_healthy_chain PASSED            [ 25%]
+tests/test_cli.py::test_verify_reports_a_tampered_event PASSED           [ 26%]
+tests/test_cli.py::test_rebuild_state_reports_zero_diff_on_a_healthy_ledger PASSED [ 27%]
+tests/test_cli.py::test_rebuild_state_repairs_and_reports_drift PASSED   [ 27%]
+tests/test_cli.py::test_dropping_the_state_tables_loses_nothing PASSED   [ 28%]
+tests/test_cli.py::test_rebuild_only_touches_its_own_project PASSED      [ 29%]
+tests/test_cli.py::test_commands_need_an_existing_project[dump] PASSED   [ 29%]
+tests/test_cli.py::test_commands_need_an_existing_project[verify] PASSED [ 30%]
+tests/test_cli.py::test_commands_need_an_existing_project[rebuild-state] PASSED [ 30%]
+tests/test_cli.py::test_console_entrypoint PASSED                        [ 31%]
+tests/test_contracts.py::test_all_five_schemas_meta_validate PASSED      [ 32%]
+tests/test_contracts.py::test_every_schema_id_is_a_v1_id PASSED          [ 32%]
+tests/test_contracts.py::test_the_contract_scripts_exit_zero[validate.py-RESULT: ALL GREEN] PASSED [ 33%]
+tests/test_contracts.py::test_the_contract_scripts_exit_zero[fixture/replay.py-RESULT: REPLAY GREEN] PASSED [ 34%]
+tests/test_contracts.py::test_event_types_match_the_payload_dispatch PASSED [ 34%]
+tests/test_contracts.py::test_event_error_reports_the_branch_for_the_events_own_type PASSED [ 35%]
+tests/test_contracts.py::test_formats_are_assertions PASSED              [ 36%]
+tests/test_contracts.py::test_embedded_validators_resolve_their_defs PASSED [ 36%]
+tests/test_contracts.py::test_json_path_formatting PASSED                [ 37%]
+tests/test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green PASSED [ 38%]
+tests/test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff PASSED [ 38%]
+tests/test_exit_fixture.py::test_the_arbiters_head_model_is_what_replay_folds_before_and_after_a_rebuild PASSED [ 39%]
+tests/test_model_fold.py::test_folding_the_fixture_gives_replays_final_model PASSED [ 40%]
+tests/test_model_fold.py::test_each_op_kind PASSED                       [ 40%]
+tests/test_model_fold.py::test_the_base_is_left_untouched_and_a_proposal_keeps_its_version PASSED [ 41%]
+tests/test_model_fold.py::test_a_missing_target_is_an_error[update_element] PASSED [ 41%]
+tests/test_model_fold.py::test_a_missing_target_is_an_error[remove_element] PASSED [ 42%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op0-element_type] PASSED [ 43%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op1-element] PASSED [ 43%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op2-element_id] PASSED [ 44%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op3-element_id] PASSED [ 45%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op4-link] PASSED [ 45%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op5-link_type] PASSED [ 46%]
+tests/test_model_fold.py::test_a_child_is_a_copy_of_its_parent_under_a_new_id PASSED [ 47%]
+tests/test_model_fold.py::test_a_genesis_is_empty PASSED                 [ 47%]
+tests/test_projections.py::test_every_event_type_is_projected_or_explicitly_not PASSED [ 48%]
+tests/test_projections.py::test_projections_never_write_events_or_reach_the_arbiter PASSED [ 49%]
+tests/test_projections.py::test_fixture_projection_equals_what_replay_folds PASSED [ 49%]
+tests/test_projections.py::test_every_fixture_version_is_materialized_and_valid PASSED [ 50%]
+tests/test_projections.py::test_model_edges_are_kept_per_version PASSED  [ 50%]
+tests/test_projections.py::test_projecting_event_by_event_equals_a_rebuild PASSED [ 51%]
+tests/test_projections.py::test_batch_size_does_not_change_the_result PASSED [ 52%]
+tests/test_projections.py::test_a_crash_mid_rebuild_resumes_to_the_same_hash PASSED [ 52%]
+tests/test_projections.py::test_killing_the_projector_process_mid_rebuild_loses_nothing PASSED [ 53%]
+tests/test_projections.py::test_dropping_every_proj_table_loses_nothing PASSED [ 54%]
+tests/test_projections.py::test_a_claim_reads_as_it_stood_at_an_earlier_seq PASSED [ 54%]
+tests/test_projections.py::test_claim_detail_has_history_and_provenance PASSED [ 55%]
+tests/test_projections.py::test_why_traces_an_element_to_requirements_decisions_claims_and_sources PASSED [ 56%]
+tests/test_projections.py::test_refuting_a_premise_compromises_everything_derived_from_it PASSED [ 56%]
+tests/test_projections.py::test_projection_status_reports_the_lag PASSED [ 57%]
+tests/test_projections.py::test_the_worker_wakes_on_the_arbiters_notification PASSED [ 58%]
+tests/test_projections.py::test_the_worker_polls_when_no_notification_arrives PASSED [ 58%]
+tests/test_projections.py::test_the_arbiter_notifies_with_the_project_id PASSED [ 59%]
+tests/test_projections.py::test_objections_decisions_waivers_checks_and_timeline PASSED [ 60%]
+tests/test_projections.py::test_a_version_created_from_a_parent_starts_as_the_parents_model PASSED [ 60%]
+tests/test_projections.py::test_an_event_that_cannot_be_folded_stops_the_projector_in_front_of_it PASSED [ 61%]
+tests/test_projections.py::test_projection_is_per_project PASSED         [ 61%]
+tests/test_projections.py::test_reads_of_things_that_are_not_projected_are_404 PASSED [ 62%]
+tests/test_refusals.py::test_documented_claim_without_evidence PASSED    [ 63%]
+tests/test_refusals.py::test_load_bearing_assumption_without_verification_plan PASSED [ 63%]
+tests/test_refusals.py::test_promotion_to_measured_needs_an_experiment_as_cause PASSED [ 64%]
+tests/test_refusals.py::test_status_change_with_the_wrong_from PASSED    [ 65%]
+tests/test_refusals.py::test_waiver_signed_by_an_agent PASSED            [ 65%]
+tests/test_refusals.py::test_evidence_citing_an_uningested_source PASSED [ 66%]
+tests/test_refusals.py::test_patch_on_a_stale_base PASSED                [ 67%]
+tests/test_refusals.py::test_resolving_an_objection_that_was_never_raised PASSED [ 67%]
+tests/test_refusals.py::test_objection_without_a_falsifiable_test PASSED [ 68%]
+tests/test_refusals.py::test_duplicate_source PASSED                     [ 69%]
+tests/test_refusals.py::test_proposed_claim_must_be_a_valid_claim PASSED [ 69%]
+tests/test_refusals.py::test_claim_id_mismatch PASSED                    [ 70%]
+tests/test_refusals.py::test_duplicate_claim_id PASSED                   [ 70%]
+tests/test_refusals.py::test_claim_from_an_unknown_proposal PASSED       [ 71%]
+tests/test_refusals.py::test_a_patch_proposal_is_not_a_claim_proposal PASSED [ 72%]
+tests/test_refusals.py::test_claim_and_patch_proposals_with_distinct_ids_are_accepted PASSED [ 72%]
+tests/test_refusals.py::test_a_proposal_id_is_used_once_across_both_kinds PASSED [ 73%]
+tests/test_refusals.py::test_formats_inside_embedded_objects_are_enforced PASSED [ 74%]
+tests/test_refusals.py::test_status_change_of_an_unknown_claim PASSED    [ 74%]
+tests/test_refusals.py::test_status_change_with_an_unknown_cause_event PASSED [ 75%]
+tests/test_refusals.py::test_a_cause_event_from_another_project_is_unknown PASSED [ 76%]
+tests/test_refusals.py::test_promotion_to_observed_is_guarded_too PASSED [ 76%]
+tests/test_refusals.py::test_retracting_an_unknown_claim PASSED          [ 77%]
+tests/test_refusals.py::test_second_genesis_version PASSED               [ 78%]
+tests/test_refusals.py::test_version_created_with_a_committed_parent_is_accepted PASSED [ 78%]
+tests/test_refusals.py::test_version_created_with_an_unknown_parent PASSED [ 79%]
+tests/test_refusals.py::test_a_parent_version_from_another_project_is_unknown PASSED [ 80%]
+tests/test_refusals.py::test_patch_must_be_a_valid_model_patch PASSED    [ 80%]
+tests/test_refusals.py::test_patch_base_mismatch PASSED                  [ 81%]
 tests/test_refusals.py::test_patch_proposed_on_a_stale_base PASSED       [ 81%]
-tests/test_refusals.py::test_patch_before_any_model_version PASSED       [ 81%]
-tests/test_refusals.py::test_patch_committed_from_an_unknown_proposal PASSED [ 82%]
+tests/test_refusals.py::test_patch_before_any_model_version PASSED       [ 82%]
+tests/test_refusals.py::test_patch_committed_from_an_unknown_proposal PASSED [ 83%]
 tests/test_refusals.py::test_proposed_check_must_be_a_valid_check PASSED [ 83%]
 tests/test_refusals.py::test_resolving_an_objection_twice PASSED         [ 84%]
 tests/test_refusals.py::test_waiver_signed_by_the_system PASSED          [ 85%]
-tests/test_refusals.py::test_experiment_with_an_uncommitted_result_claim PASSED [ 86%]
-tests/test_refusals.py::test_decision_citing_an_uncommitted_claim PASSED [ 87%]
-tests/test_refusals.py::test_merge_revert_must_cite_a_committed_merge PASSED [ 88%]
-tests/test_refusals.py::test_schema_gate[change0-$.type] PASSED          [ 89%]
-tests/test_refusals.py::test_schema_gate[change1-$.idempotency_key] PASSED [ 90%]
-tests/test_refusals.py::test_schema_gate[change2-$] PASSED               [ 90%]
-tests/test_refusals.py::test_schema_gate[change3-$.actor.kind] PASSED    [ 91%]
-tests/test_refusals.py::test_schema_gate[change4-$.event_id] PASSED      [ 92%]
-tests/test_refusals.py::test_schema_gate[change5-$.ts] PASSED            [ 93%]
-tests/test_refusals.py::test_schema_gate[change6-$.ts] PASSED            [ 94%]
-tests/test_refusals.py::test_schema_gate[change7-$.session_id] PASSED    [ 95%]
-tests/test_refusals.py::test_schema_gate[change8-$] PASSED               [ 96%]
-tests/test_refusals.py::test_schema_gate[change9-$.payload] PASSED       [ 97%]
-tests/test_refusals.py::test_schema_gate_runs_before_the_rules PASSED    [ 98%]
-tests/test_refusals.py::test_project_mismatch PASSED                     [ 99%]
-tests/test_refusals.py::test_candidate_must_be_an_object PASSED          [100%]
+tests/test_refusals.py::test_experiment_with_an_uncommitted_result_claim PASSED [ 85%]
+tests/test_refusals.py::test_decision_citing_an_uncommitted_claim PASSED [ 86%]
+tests/test_refusals.py::test_merge_revert_must_cite_a_committed_merge PASSED [ 87%]
+tests/test_refusals.py::test_schema_gate[change0-$.type] PASSED          [ 87%]
+tests/test_refusals.py::test_schema_gate[change1-$.idempotency_key] PASSED [ 88%]
+tests/test_refusals.py::test_schema_gate[change2-$] PASSED               [ 89%]
+tests/test_refusals.py::test_schema_gate[change3-$.actor.kind] PASSED    [ 89%]
+tests/test_refusals.py::test_schema_gate[change4-$.event_id] PASSED      [ 90%]
+tests/test_refusals.py::test_schema_gate[change5-$.ts] PASSED            [ 90%]
+tests/test_refusals.py::test_schema_gate[change6-$.ts] PASSED            [ 91%]
+tests/test_refusals.py::test_schema_gate[change7-$.session_id] PASSED    [ 92%]
+tests/test_refusals.py::test_schema_gate[change8-$] PASSED               [ 92%]
+tests/test_refusals.py::test_schema_gate[change9-$.payload] PASSED       [ 93%]
+tests/test_refusals.py::test_schema_gate_runs_before_the_rules PASSED    [ 94%]
+tests/test_refusals.py::test_project_mismatch PASSED                     [ 94%]
+tests/test_refusals.py::test_candidate_must_be_an_object PASSED          [ 95%]
+tests/test_refusals.py::test_a_valid_patch_is_accepted_and_its_result_becomes_the_head_model PASSED [ 96%]
+tests/test_refusals.py::test_a_version_created_from_a_parent_copies_the_parents_model PASSED [ 96%]
+tests/test_refusals.py::test_patch_whose_target_is_not_in_the_model PASSED [ 97%]
+tests/test_refusals.py::test_patch_that_would_not_leave_a_valid_model PASSED [ 98%]
+tests/test_refusals.py::test_reusing_a_model_version_id PASSED           [ 98%]
+tests/test_refusals.py::test_a_patch_op_without_the_fields_its_kind_needs PASSED [ 99%]
+tests/test_refusals.py::test_a_version_id_the_system_model_cannot_carry PASSED [100%]
 
-============================= 111 passed in 9.89s ==============================
+============================= 155 passed in 20.94s =============================
 ```
 
 Removing the per-project lock makes exit test 4 fail with a `(project_id, seq)` unique
@@ -401,17 +460,121 @@ $ py phase0-contracts/fixture/replay.py
 RESULT: REPLAY GREEN — Phase 0 exit test complete
 ```
 
+## M1.1: the Arbiter folds the model
+
+Before M1.1 the Arbiter accepted a model patch whose result was not a valid System Model, and
+a reused model `version_id`: invalid state could enter the ledger, and `replay.py` refused
+ledgers the Arbiter had committed. Now:
+
+- **One fold** (`src/architect/model_fold.py`): pure functions that apply a patch's ops with
+  `replay.py`'s semantics. The Arbiter and the projector both use it.
+- **The Arbiter materializes every version** in `arb_model_versions.model` (one row per
+  version, not only the head, because a `parent` may be any committed version). On
+  `model.patch_proposed` and `model.patch_committed` it applies the patch to the head model
+  and validates the result; on `model.version_created` it validates the genesis or the copy
+  of the parent. `architect rebuild-state` rebuilds the models, and the fixture rebuilds with
+  an empty diff.
+- **A version created from a parent is a copy of the parent's model** (P-4 semantics;
+  `replay.py` empties it instead, contracts-PROPOSALS.md P-7, deferred to v1.1).
+- **Owner-authorized test-data change.** `tests/builders.py::patch()` used to add
+  `{"name": "Fencer"}` under the element type `component`, which is not a valid System Model,
+  so the M1 sample ledger encoded the bug. It now adds a complete component under
+  `components` (`id` = `cmp_00FENCER<last two characters of the base version>`, kind
+  `service`, stateless, no requirement refs). The owner authorized this one change in the M2
+  prompt (part A, item 7); no test function changed.
+
+| # | Exit test | Result | Evidence |
+| --- | --- | --- | --- |
+| A1 | `PATCH_TARGET_MISSING`, `INVALID_MODEL_RESULT`, `DUPLICATE_VERSION_ID` refused, nothing written | green | `test_refusals.py::test_patch_whose_target_is_not_in_the_model`, `::test_patch_that_would_not_leave_a_valid_model`, `::test_reusing_a_model_version_id` |
+| A2 | A valid patch is accepted; a version created from a parent copies the parent | green | `test_refusals.py::test_a_valid_patch_is_accepted_and_its_result_becomes_the_head_model`, `::test_a_version_created_from_a_parent_copies_the_parents_model` |
+| A3 | The fixture ingests with zero rejections; rebuild-state zero diff including the head model | green | `test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green`, `::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff`, `::test_the_arbiters_head_model_is_what_replay_folds_before_and_after_a_rebuild` |
+
+A database created before M1.1 has an `arb_model_versions` without the `model` column:
+drop the `arb_*` tables and run `architect rebuild-state` per project (`schema.sql` creates
+tables; it does not migrate them).
+
+## M2: projections, the read side
+
+`arb_*` is the Arbiter's minimal validation state; `proj_*` are read models for queries.
+Both are disposable projections of the ledger. The projector never writes an event and never
+calls the Arbiter.
+
+### What landed
+
+- **The fold** (`projections.py`): one handler per projected event type, writing the eleven
+  `proj_*` tables: `proj_sources`, `proj_claims`, `proj_claim_status_history`,
+  `proj_model_versions`, `proj_edges`, `proj_objections`, `proj_decisions`, `proj_waivers`,
+  `proj_checks`, `proj_session_timeline`, plus the projector's `proj_cursors`. Model versions
+  go through `model_fold`, and every stored version is validated against
+  `system_model.schema.json`; a failure raises `ProjectionError`, the projector commits the
+  events before the offending one and stops in front of it, exit 1.
+- **The projector** (`projector.py`, `architect project`): one projection, `read_models`,
+  folded per project in `seq` order in batches (default 200), each batch one transaction that
+  locks the project's `proj_cursors` row, folds, and advances it. A crash rolls the batch
+  back with its cursor. It wakes on the Arbiter's `NOTIFY architect_events` (the one M1 code
+  change: `pg_notify` in the commit transaction, delivered on commit) and polls every 2 s
+  regardless. `--once` catches up and exits.
+- **Refutation propagation**: `proj_claims.premise_compromised` is recomputed (recursive CTE
+  over `DERIVED_FROM` edges) whenever a claim with premises is committed or a status enters
+  or leaves `refuted`/`retracted`. The as-of query recomputes it from the history.
+- **Read API** (`readmodel.py`, `api.py`), all GET, reading `proj_*` only:
+  `/models/{version_id}`, `/models/head`, `/claims?status=&load_bearing=&as_of_seq=`,
+  `/claims/{claim_id}` (status history, evidence sources, premise chain),
+  `/elements/{element_id}/why`, `/projections/status`.
+- **CLI**: `architect project [--once] [--poll-seconds] [--batch-size]` and
+  `architect rebuild-projections --project P` (deletes the project's `proj_*` rows and the
+  cursor, folds the ledger again, prints the sha256 content hash of every row).
+
+### Decisions worth knowing
+
+- **One projection, one cursor.** All `proj_*` tables advance together, so a read that joins
+  them (the why-trace) sees one consistent seq. `proj_cursors.projection` is there for the
+  projections later milestones add.
+- **`proj_claims.claim` is the claim as committed**; `status` is current. Rewriting the
+  claim's own `status` would make some claims schema-invalid (a `measured` claim without
+  evidence), so the two are kept apart.
+- **Model edges are written once per version** with `version_id` set; claim and decision
+  edges have `version_id` NULL. `ord` numbers the edges one event produces, so two evidence
+  entries for one source stay two edges.
+- **Where the read side differs from `replay.py`**: `claim.retracted` sets the status to
+  `retracted` (`replay.py` ignores the event); a version created from a parent copies the
+  parent (P-7); `remove_element` of a missing target is an error (the Arbiter refuses it
+  anyway). The fixture exercises none of these, so B1 holds.
+- **The content hash** covers every `proj_*` row of the project (not the cursor), each row as
+  canonical JSON, sorted, so physical row order and batch size do not matter.
+- **Not projected (listed, so a new event type is a decision)**: `claim.proposed`,
+  `model.patch_proposed`, `entity.merged`, `entity.merge_reverted`, `experiment.recorded`,
+  `budget.updated`.
+
+### Exit tests
+
+| # | Exit test | Result | Evidence (`tests/test_projections.py`) |
+| --- | --- | --- | --- |
+| B1 | Head model and claim statuses equal what `replay.py` folds | green | `test_fixture_projection_equals_what_replay_folds` |
+| B2 | All four fixture versions materialized and valid; `flw_FIXINGR001` gains `input_validation` in V3 | green | `test_every_fixture_version_is_materialized_and_valid` |
+| B3 | Event-by-event projection hashes like a rebuild | green | `test_projecting_event_by_event_equals_a_rebuild`, `test_batch_size_does_not_change_the_result` |
+| B4 | Crash safety: hook raise and subprocess kill mid-rebuild | green | `test_a_crash_mid_rebuild_resumes_to_the_same_hash`, `test_killing_the_projector_process_mid_rebuild_loses_nothing` |
+| B5 | Drop every `proj_*` table, rebuild, same hash | green | `test_dropping_every_proj_table_loses_nothing` |
+| B6 | `clm_FIXPAYLOAD1` is `assumed` at seq 31 and `measured` at 32 | green | `test_a_claim_reads_as_it_stood_at_an_earlier_seq` |
+| B7 | Why-trace of `cmp_FIXSHARD01` | green | `test_why_traces_an_element_to_requirements_decisions_claims_and_sources` |
+| B8 | Refutation propagates transitively and only to dependents | green | `test_refuting_a_premise_compromises_everything_derived_from_it` |
+| B9 | Zero lag after catch-up | green | `test_projection_status_reports_the_lag` |
+
+Also covered: the NOTIFY wake-up and the polling fallback, the per-version edges, the other
+read models, the 404s of the read API, and a legacy event that cannot be folded (inserted
+with raw SQL, since the Arbiter refuses it now) stopping the projector in front of it.
+
 ## Not verified on Windows
 
 The database-backed tests have only run on Linux in CI. The Windows development machine has
 had no reachable PostgreSQL since the fixture landed, so they have not run there against the
-fixture or against the v1.0 rules. What does run on Windows is green: `validate.py`,
-`replay.py`, `ruff check .`, and the eleven tests that need no database.
+fixture, the v1.0 rules, M1.1 or M2. What does run on Windows is green: `validate.py`,
+`replay.py`, `ruff check .`, and the 26 tests that need no database.
 
 ## Open
 
 1. **Run the suite once on Windows** against a local PostgreSQL 16, to confirm what CI shows.
 2. **contracts-PROPOSALS.md P-6** (the contract scripts read files with the platform's
    default encoding) waits for the next contract version.
-3. **M2 is parked** on the local branch `m2-projections` (one WIP commit, not pushed). Its
-   database-backed tests have never run. Resume it only on the owner's word.
+3. **contracts-PROPOSALS.md P-7 and P-8** (a version created from a parent; the model rules
+   the Arbiter enforces beyond the README) are deferred to contracts v1.1.

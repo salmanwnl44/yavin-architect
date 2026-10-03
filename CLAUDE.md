@@ -13,7 +13,8 @@ Read it before coding, in this order: `README.md`, the five `*.schema.json` file
 
 `fixture/replay.py` is the reference semantics: the Arbiter must refuse every ledger
 `replay.py` refuses, and accept what it accepts except where the contracts README lists a
-rule as Arbiter-enforced (model version parents, proposal id uniqueness).
+rule as Arbiter-enforced (model version parents, proposal id uniqueness) or
+`contracts-PROPOSALS.md` records the Arbiter as stricter (P-8: the model fold).
 
 If a contract blocks you, log the friction in `contracts-PROPOSALS.md` and work around it.
 Do not change the contracts.
@@ -49,6 +50,8 @@ Do not change the contracts.
 - `src/architect/state.py`: the `arb_*` projection tables.
 - `src/architect/ledger.py`: read side (pages, head, dump, hash-chain verification).
 - `src/architect/rebuild.py`: rebuild `arb_*` from the ledger and diff.
+- `src/architect/model_fold.py`: the one fold of a model version from the one before it,
+  used by the Arbiter's rules and by the projector.
 - `src/architect/projections.py`: the `proj_*` fold, one handler per projected event type.
 - `src/architect/projector.py`: the projector worker (cursor, batches, LISTEN/NOTIFY, rebuild,
   content hash).

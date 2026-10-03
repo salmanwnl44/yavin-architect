@@ -83,14 +83,32 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 
 ## P-7: `replay.py` empties the model on every `model.version_created`
 
-**Status: open, for the next contract version.**
+**Status: open, deferred to v1.1.**
 
 - **Problem.** v1.0 lets `model.version_created` carry a `parent` (P-4), but `replay.py` folds
   every `model.version_created` to an empty model, parent or not. The contracts do not say
   what a version created from a parent contains. The fixture only has a genesis, so its
   replay is unaffected.
-- **Workaround.** The read models (`architect.projections`) materialize a version created
-  from a parent as a copy of the parent's model, under the new `version_id`. That differs
-  from `replay.py` on any ledger that uses `parent`.
+- **Workaround.** The Arbiter and the read models (both through `architect.model_fold`)
+  materialize a version created from a parent as a copy of the parent's model, under the new
+  `version_id`. That differs from `replay.py` on any ledger that uses `parent`.
 - **Proposal.** State in the contracts that a version created from a parent starts as the
   parent's model, and have `replay.py` fold it that way.
+
+## P-8: the model rules the Arbiter enforces are not in the contracts
+
+**Status: open, deferred to v1.1.**
+
+- **Problem.** Since M1.1 the Arbiter folds every model version before committing it and
+  refuses what `replay.py` would refuse: an `update_element` on a missing target, and a
+  version that is not a valid system model. It also refuses what `replay.py` lets through:
+  a `remove_element` on a missing target, a reused `version_id`, a proposal whose patch
+  would not apply, and an intermediate version that is invalid (`replay.py` validates the
+  final model only). The README's list of Arbiter-enforced rules (P-4, P-5) does not name
+  these, so CLAUDE.md's reference-semantics rule has unlisted exceptions.
+- **Workaround.** `CLAUDE.md` points here. `architect.model_fold` is the one fold both the
+  Arbiter and the projector use; `tests/test_model_fold.py` pins its agreement with
+  `replay.py` on the fixture.
+- **Proposal.** State in the README that a committed patch must apply (every target exists)
+  and leave a valid system model, that proposals are held to the same rule, and that version
+  ids are unique per project; have `replay.py` enforce the same.
