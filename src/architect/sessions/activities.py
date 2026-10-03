@@ -395,7 +395,11 @@ class SessionActivities:
 
         requirements: list[dict[str, Any]] = []
         risks: list[dict[str, Any]] = []
+        labels = linter.labelled_requirements(brief)
         for n, requirement in enumerate(parsed["requirements"]):
+            label = linter.label_for(requirement, labels)
+            if label is not None:  # the brief's own id for this requirement wins
+                requirement = {**requirement, "slug": label}
             result = linter.lint(requirement)
             if result.measurable:
                 obj = {"entity_type": "metric", "id": slug(result.metric or "metric")}

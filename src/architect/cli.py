@@ -556,6 +556,34 @@ def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect golden run TASK [--mode review|design] [--live] [--kill-after attack]."""
+    import asyncio
+
+    from architect.golden import runner, scorecard
+
+    try:
+        card = asyncio.run(
+            runner.run_golden(
+                args.task,
+                mode=args.mode,
+                live=args.live,
+                kill_after=args.kill_after,
+                dsn=args.database_url or database_url(),
+                address=args.address,
+                out=args.out,
+                log=lambda line: print(line, file=sys.stderr, flush=True),
+            )
+        )
+    except (runner.GoldenError, FileNotFoundError, ValueError) as error:
+        print(f"golden run stopped: {error}", file=sys.stderr)
+        return 1
+    out = args.out or runner.default_out(args.task, args.mode, args.live)
+    print(scorecard.format_scorecard(card))
+    print(f"scorecard: {out}")
+    return 0 if card["passed"] else 2
+
+
 def _init_db(pool: ConnectionPool, args: argparse.Namespace) -> int:
     print("schema is up to date")  # ensure_schema already ran in main()
     return 0
@@ -767,6 +795,33 @@ def _parser() -> argparse.ArgumentParser:
     why.add_argument("--element", required=True)
     why.add_argument("--version", default=None, help="default: the head model")
     why.set_defaults(run=_why)
+
+    golden = sub.add_parser("golden", help="run a golden task and write its scorecard")
+    golden_sub = golden.add_subparsers(dest="golden_command", required=True)
+    golden_run = golden_sub.add_parser("run", help="one session on a golden task, scored")
+    golden_run.add_argument("task", help="for example gt-001")
+    golden_run.add_argument(
+        "--mode",
+        default="review",
+        choices=["review", "design"],
+        help="review starts from the task's seed model; design from the brief alone",
+    )
+    golden_run.add_argument(
+        "--live", action="store_true", help="the real gateway (default: the scripted architect)"
+    )
+    golden_run.add_argument(
+        "--kill-after",
+        default=None,
+        choices=["attack"],
+        help="end the worker process after this phase and resume on a new one",
+    )
+    golden_run.add_argument("--out", type=Path, default=None, help="where to write the scorecard")
+    golden_run.add_argument(
+        "--address",
+        default=None,
+        help="Temporal (default: $ARCHITECT_TEMPORAL_ADDRESS, else a local dev server)",
+    )
+    golden.set_defaults(run=_golden)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

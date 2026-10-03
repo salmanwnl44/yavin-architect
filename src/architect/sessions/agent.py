@@ -20,7 +20,7 @@ from architect.errors import Rejection
 from architect.gateway.request import GatewayRequest
 from architect.ingestion.normalize import typed_id
 
-PROMPT_VERSION = "architect-v1"
+PROMPT_VERSION = "architect-v2"
 ROLE = "architect"
 ACTOR = {"kind": "agent", "id": "architect", "role": "architect"}
 ORCHESTRATOR = {"kind": "system", "id": "session-orchestrator", "role": "system"}
@@ -40,7 +40,8 @@ SYSTEM_BY_PURPOSE = {
         "Read the brief and return its requirements, constraints and unknowns. A requirement "
         "is measurable when it has a metric, a numeric target and a unit; give metric, target "
         "and unit whenever the brief states them, and quote the brief's words that state the "
-        "requirement verbatim. Slugs are short, lowercase, hyphenated."
+        "requirement verbatim. Slugs are short, lowercase, hyphenated; when the brief labels "
+        "a requirement with a slug in square brackets, use exactly that slug."
     ),
     "draft": (
         "Propose the first System Model as patch ops on the current head: add_element ops with "

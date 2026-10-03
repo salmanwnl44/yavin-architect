@@ -1,0 +1,46 @@
+# Golden task gt-001: the answer key. The runner scores a session against this file.
+task: gt-001
+title: ingest pipeline (API gateway -> queue -> worker pool -> datastore)
+preset: quick
+usd_cap: 3.00
+
+# Review mode starts from seed.json, which has exactly these four planted flaws. Each must be
+# caught by its check, on its element, in round 1: that is the checks' work, not the model's.
+planted_flaws:
+  - id: F1
+    description: the gateway -> queue flow has no backpressure_ref
+    check: C-012
+    element: flw_ENQUEUE0001
+  - id: F2
+    description: the client -> gateway flow crosses the cluster boundary without input_validation
+    check: C-008
+    element: flw_INGEST00001
+  - id: F3
+    description: the worker pool is stateful and durable but has no recovery block
+    check: C-007
+    element: cmp_WORKERS0001
+  - id: F4
+    description: the datastore declares max_qps 2000; the inbound peak 1500 x headroom 1.5 needs 2250
+    check: C-005
+    element: cmp_STORE000001
+
+# On the seed every other check passes or is skipped.
+clean_checks: [C-001, C-002, C-003, C-004, C-006, C-009, C-010, C-011, C-013]
+
+linter:
+  measurable: [req_peak-ingest, req_ingest-latency, req_no-loss, req_tenant-isolation]
+  unmeasurable: [req_robust]
+  expected_risks: ["requirement-unmeasurable:req_robust"]
+
+thresholds:
+  review:
+    flaws_caught: 4
+    caught_by_round: 1
+    clean_resume: true        # when the run kills and resumes a worker
+    final_model: true
+    package: true
+  design:
+    model_produced: true
+    coverage: C-001 passes, or every unsatisfied requirement is listed as an open risk
+    package: true
+  # repair quality (how many of F1-F4 the architect repaired) is reported, never gated

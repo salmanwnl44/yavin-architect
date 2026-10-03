@@ -1,0 +1,49 @@
+{
+  "requirements": [
+    {
+      "slug": "peak-ingest",
+      "text": "The pipeline must sustain a peak ingest of 1500 req/s.",
+      "metric": "throughput",
+      "target": 1500,
+      "unit": "req/s",
+      "quote": "sustain a peak ingest of 1500 req/s"
+    },
+    {
+      "slug": "ingest-latency",
+      "text": "Ingest latency at the gateway must stay under p99 < 300 ms.",
+      "metric": "latency",
+      "target": 300,
+      "unit": "ms",
+      "quote": "p99 < 300 ms"
+    },
+    {
+      "slug": "no-loss",
+      "text": "No acknowledged event may be lost on a single-node failure: RPO 0 s.",
+      "metric": "rpo",
+      "target": 0,
+      "unit": "s",
+      "quote": "No acknowledged event may be lost on a single-node failure"
+    },
+    {
+      "slug": "tenant-isolation",
+      "text": "Tenant data must be isolated: cross-tenant error rate 0 %.",
+      "metric": "error_rate",
+      "target": 0,
+      "unit": "%",
+      "quote": "Tenant data must be isolated"
+    },
+    {
+      "slug": "robust",
+      "text": "The system should be robust.",
+      "quote": "The system should be robust"
+    }
+  ],
+  "constraints": [
+    {
+      "slug": "one-trust-boundary",
+      "text": "The cluster is one trust boundary; clients are outside it.",
+      "quote": "The cluster is one trust boundary"
+    }
+  ],
+  "unknowns": []
+}
