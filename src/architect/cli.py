@@ -13,6 +13,7 @@ from psycopg_pool import ConnectionPool
 
 from architect import ledger, projector
 from architect.arbiter import ARBITER_STAMPED, Arbiter
+from architect.checks import runner as check_runner
 from architect.db import database_url, ensure_schema, open_pool
 from architect.errors import Rejection
 from architect.projections import ProjectionError
@@ -127,6 +128,55 @@ def _rebuild_projections(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_results(report: check_runner.RunReport) -> None:
+    print(
+        f"checks on {report.model_version} as of seq {report.as_of_seq} "
+        f"(catalog {report.catalog_version})"
+    )
+    for result in report.results:
+        refs = ", ".join(result.element_refs) if result.element_refs else "-"
+        how = (
+            ""
+            if result.event_id is None
+            else (" (on record)" if result.replayed else " (recorded)")
+        )
+        print(f"  {result.check_id} {result.severity:<8} {result.status:<7} {refs}{how}")
+
+
+def _check(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    try:
+        report = check_runner.run(
+            pool, args.project, args.version, args.as_of_seq, record=not args.dry_run
+        )
+    except Rejection as rejection:
+        print(f"rejected {json.dumps(rejection.body())}", file=sys.stderr)
+        return 1
+    _print_results(report)
+    if args.dry_run:
+        print("dry run: nothing recorded")
+    return 0
+
+
+def _gate(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    if not _project_known(pool, args.project):
+        return 1
+    try:
+        report = check_runner.run(pool, args.project, args.version, args.as_of_seq)
+        verdict = check_runner.gate(pool, args.project, args.version, report.as_of_seq)
+    except Rejection as rejection:
+        print(f"rejected {json.dumps(rejection.body())}", file=sys.stderr)
+        return 1
+    _print_results(report)
+    print(f"gate IMPLEMENTATION_READY: {verdict['verdict']}")
+    for reason in verdict["reasons"]:
+        print(f"  blocking: {json.dumps(reason, sort_keys=True)}")
+    for warning in verdict["warnings"]:
+        print(f"  warning: {json.dumps(warning, sort_keys=True)}")
+    return 0 if verdict["verdict"] == "ALLOWED" else 2
+
+
 def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     if not _project_known(pool, args.project):
         return 1
@@ -195,6 +245,21 @@ def _parser() -> argparse.ArgumentParser:
     rebuild_projections.add_argument("--project", required=True)
     rebuild_projections.add_argument("--batch-size", type=int, default=DEFAULT_BATCH)
     rebuild_projections.set_defaults(run=_rebuild_projections)
+
+    check = sub.add_parser("check", help="run the check catalog on a model version")
+    check.add_argument("--project", required=True)
+    check.add_argument("--version", required=True, help="model version id")
+    check.add_argument("--as-of-seq", type=int, default=None, help="default: the latest seq")
+    check.add_argument("--dry-run", action="store_true", help="compute and print; record nothing")
+    check.set_defaults(run=_check)
+
+    gate = sub.add_parser(
+        "gate", help="run the catalog, record the results, print the IMPLEMENTATION_READY verdict"
+    )
+    gate.add_argument("--project", required=True)
+    gate.add_argument("--version", required=True, help="model version id")
+    gate.add_argument("--as-of-seq", type=int, default=None, help="default: the latest seq")
+    gate.set_defaults(run=_gate)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

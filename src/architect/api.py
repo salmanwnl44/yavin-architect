@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from architect import __version__, ledger, projector, readmodel
 from architect.arbiter import Arbiter
+from architect.checks import runner
 from architect.contracts import json_path, load_contracts
 from architect.db import ensure_schema, open_pool
 from architect.errors import Rejection
@@ -180,5 +181,41 @@ def create_app(database_url: str | None = None) -> FastAPI:
     def get_projection_status(request: Request, project_id: str) -> dict[str, Any]:
         require_project(request, project_id)
         return projector.status(request.app.state.pool, project_id)
+
+    # The checks engine (M3). A run records its results through the Arbiter.
+
+    @app.post("/v1/projects/{project_id}/models/{version_id}/checks")
+    def run_checks(
+        request: Request,
+        project_id: str,
+        version_id: str,
+        as_of_seq: Annotated[int | None, Query(ge=0)] = None,
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        report = runner.run(request.app.state.pool, project_id, version_id, as_of_seq)
+        return report.as_dict()
+
+    @app.get("/v1/projects/{project_id}/models/{version_id}/checks")
+    def get_checks(request: Request, project_id: str, version_id: str) -> dict[str, Any]:
+        """The latest recorded result per check for the version."""
+        require_project(request, project_id)
+        pool = request.app.state.pool
+        if readmodel.model_version(pool, project_id, version_id) is None:
+            raise Rejection(
+                "MODEL_VERSION_NOT_FOUND",
+                f"no projected model version {version_id} in project {project_id!r}",
+            )
+        results = runner.recorded(pool, project_id, version_id)
+        return {"model_version": version_id, "results": list(results.values())}
+
+    @app.get("/v1/projects/{project_id}/models/{version_id}/gate")
+    def get_gate(
+        request: Request,
+        project_id: str,
+        version_id: str,
+        as_of_seq: Annotated[int | None, Query(ge=0)] = None,
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        return runner.gate(request.app.state.pool, project_id, version_id, as_of_seq)
 
     return app
