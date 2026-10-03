@@ -9,15 +9,20 @@ story (S1 planted flaws, S2 unrepairable, S3 rejection loop, S4 budget...) is a 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
+import os
 import re
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 from temporalio.client import Client, WorkflowFailureError, WorkflowHandle
+from temporalio.testing import WorkflowEnvironment
+from ulid import ULID
 
 from architect import ledger
 from architect.gateway.config import from_mapping
@@ -485,11 +490,12 @@ async def run_to_end(
     input: SessionInput,
     *,
     decide: str | None = "approve",
+    task_queue: str = TASK_QUEUE,
 ) -> dict[str, Any]:
     """Run one session on a worker until it waits for the owner or ends, optionally decide,
     and return the workflow's final view."""
-    async with build_worker(client, task_queue=TASK_QUEUE, activities=activities):
-        handle = await start(client, input, TASK_QUEUE)
+    async with build_worker(client, task_queue=task_queue, activities=activities):
+        handle = await start(client, input, task_queue)
         view = await wait_for(handle, is_final_or_awaiting)
         if view["status"] == "awaiting_approval" and decide is not None:
             await handle.signal(decide)
@@ -524,6 +530,54 @@ async def result_of(handle: WorkflowHandle) -> dict[str, Any]:
             + "\nclosing events: "
             + "\n".join(closing[-3:])
         ) from failure
+
+
+@contextlib.contextmanager
+def background_worker(activities: SessionActivities) -> Iterator[str]:
+    """A time-skipping environment and a worker on a thread of their own, for the synchronous
+    CLI and API tests. Yields the server's address."""
+    ready, stop = threading.Event(), threading.Event()
+    holder: dict[str, Any] = {}
+
+    async def main() -> None:
+        try:
+            async with await WorkflowEnvironment.start_time_skipping() as env:
+                async with build_worker(env.client, task_queue=TASK_QUEUE, activities=activities):
+                    holder["address"] = env.client.service_client.config.target_host
+                    ready.set()
+                    while not stop.is_set():
+                        await asyncio.sleep(0.1)
+        except BaseException as error:  # noqa: BLE001 - surfaced to the test thread
+            holder["error"] = error
+            ready.set()
+
+    thread = threading.Thread(target=lambda: asyncio.run(main()), daemon=True)
+    thread.start()
+    assert ready.wait(120), "the background worker never came up"
+    if "error" in holder:
+        raise AssertionError(f"the background worker failed: {holder['error']!r}")
+    try:
+        yield holder["address"]
+    finally:
+        stop.set()
+        thread.join(60)
+
+
+@contextlib.asynccontextmanager
+async def dev_server() -> AsyncIterator[Client]:
+    """A REAL Temporal dev server: the one at ARCHITECT_TEMPORAL_ADDRESS when CI started it
+    (`temporal server start-dev`), else one the SDK downloads and starts locally. Never
+    skipped."""
+    address = os.environ.get("ARCHITECT_TEMPORAL_ADDRESS")
+    if address:
+        yield await Client.connect(address)
+        return
+    async with await WorkflowEnvironment.start_local() as env:
+        yield env.client
+
+
+def unique_session_id() -> str:
+    return f"ses_{ULID()}"
 
 
 def events_of(pool, project_id: str, *types: str) -> list[dict[str, Any]]:

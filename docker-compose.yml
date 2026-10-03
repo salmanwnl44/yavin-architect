@@ -15,8 +15,11 @@ services:
       timeout: 3s
       retries: 30
 
-  # Durable-workflow engine for sessions (spec §13). Unused until the sessions
-  # milestone; start it with `docker compose --profile sessions up`.
+  # Durable-workflow engine for design sessions (spec §13, module M6).
+  #   docker compose --profile sessions up -d     # Postgres plus this dev server
+  #   architect worker                            # then start a session: architect session start
+  # The UI is at http://localhost:8233; the SDK address is localhost:7233
+  # (ARCHITECT_TEMPORAL_ADDRESS). The dev server keeps its history in memory.
   temporal:
     image: temporalio/temporal:latest
     profiles: ["sessions"]

@@ -12,6 +12,7 @@ NOT_FOUND_CODES = frozenset(
         "CLAIM_NOT_FOUND",
         "ELEMENT_NOT_FOUND",
         "SOURCE_NOT_FOUND",
+        "SESSION_NOT_FOUND",
     }
 )
 

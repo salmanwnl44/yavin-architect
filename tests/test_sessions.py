@@ -12,27 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from session_fixtures import (
-    REQ_LATENCY,
-    REQ_NO_LOSS,
-    REQ_THROUGHPUT,
-    S1_STORY,
-    S2_STORY,
-    S3_GIVE_UP_STORY,
-    S3_RETRY_STORY,
-    SESSION_ID,
-    TASK_QUEUE,
-    WORKER,
-    ScriptedArchitect,
-    create_project,
-    events_of,
-    make_activities,
-    make_gateway,
-    result_of,
-    run_to_end,
-    session_input,
-    wait_for,
-)
 from temporalio.testing import WorkflowEnvironment
 
 import architect
@@ -47,6 +26,29 @@ from architect.sessions.service import load_package, session_row, show, start
 from architect.sessions.worker import build_worker
 from builders import candidate, claim, ident
 from conftest import PROJECT
+from session_fixtures import (
+    BRIEF,
+    REQ_LATENCY,
+    REQ_NO_LOSS,
+    REQ_THROUGHPUT,
+    S1_STORY,
+    S2_STORY,
+    S3_GIVE_UP_STORY,
+    S3_RETRY_STORY,
+    SESSION_ID,
+    TASK_QUEUE,
+    WORKER,
+    ScriptedArchitect,
+    background_worker,
+    create_project,
+    events_of,
+    make_activities,
+    make_gateway,
+    result_of,
+    run_to_end,
+    session_input,
+    wait_for,
+)
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
 
@@ -722,3 +724,151 @@ def test_s12_workflow_modules_import_nothing_impure():
                     )
     text = (package / "workflow.py").read_text(encoding="utf-8")
     assert "datetime.now(" not in text and "import random" not in text
+
+
+# --- the CLI and the API ----------------------------------------------------------------------
+
+
+def _wait_cli(dsn: str, session_id: str, wanted: str, capsys) -> dict[str, Any]:
+    import time
+
+    from architect.cli import main
+
+    for _ in range(600):
+        assert main(["--database-url", dsn, "session", "status", "--session", session_id]) == 0
+        view = json.loads(capsys.readouterr().out)
+        if view["status"] == wanted:
+            return view
+        assert view["status"] != "failed", view
+        time.sleep(0.2)
+    raise AssertionError(f"never reached {wanted}: {view}")
+
+
+def test_session_cli(dsn, pool, tmp_path, monkeypatch, capsys):
+    from architect.cli import main
+
+    create_project(pool, PROJECT)
+    monkeypatch.setenv("ARCHITECT_OBJECT_STORE", str(tmp_path / "objects"))
+    activities = make_activities(
+        pool, make_gateway(pool, ScriptedArchitect(S1_STORY)), tmp_path / "objects"
+    )
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text(BRIEF, encoding="utf-8")
+    with background_worker(activities) as address:
+        monkeypatch.setenv("ARCHITECT_TEMPORAL_ADDRESS", address)
+        code = main(
+            [
+                "--database-url",
+                dsn,
+                "session",
+                "--task-queue",
+                TASK_QUEUE,
+                "start",
+                "--project",
+                PROJECT,
+                "--brief",
+                str(brief_path),
+                "--preset",
+                "quick",
+                "--override",
+                "usd=null",
+                "--override",
+                "max_rounds=2",
+            ]
+        )
+        started = json.loads(capsys.readouterr().out)
+        assert code == 0 and started["session_id"].startswith("ses_")
+        assert started["limits"]["usd"] is None and started["limits"]["max_rounds"] == 2
+        session_id = started["session_id"]
+        _wait_cli(dsn, session_id, "awaiting_approval", capsys)
+        assert main(["--database-url", dsn, "session", "approve", "--session", session_id]) == 0
+        assert "approve sent" in capsys.readouterr().out
+        _wait_cli(dsn, session_id, "approved", capsys)
+        assert (
+            main(
+                [
+                    "--database-url",
+                    dsn,
+                    "session",
+                    "show",
+                    "--project",
+                    PROJECT,
+                    "--session",
+                    session_id,
+                ]
+            )
+            == 0
+        )
+        shown = capsys.readouterr().out
+    assert f"session {session_id}: approved" in shown and "-> frame" in shown
+    assert "gate: ALLOWED" in shown and "package: " in shown and "round 1:" in shown
+    assert f"requirement-unmeasurable:{REQ_NO_LOSS}" in shown
+    assert (
+        main(
+            [
+                "--database-url",
+                dsn,
+                "session",
+                "show",
+                "--project",
+                PROJECT,
+                "--session",
+                "ses_NOSUCH0001",
+            ]
+        )
+        == 1
+    )
+
+
+def test_session_endpoints(dsn, pool, tmp_path, monkeypatch):
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from architect.api import create_app
+    from architect.ingestion.objectstore import LocalObjectStore
+
+    activities = make_activities(
+        pool, make_gateway(pool, ScriptedArchitect(S1_STORY)), tmp_path / "objects"
+    )
+    monkeypatch.setenv("ARCHITECT_TEMPORAL_TASK_QUEUE", TASK_QUEUE)
+    with (
+        background_worker(activities) as address,
+        TestClient(create_app(dsn, temporal_address=address)) as client,
+    ):
+        assert client.post("/v1/projects", json={"project_id": PROJECT}).status_code == 201
+        client.app.state.object_store = LocalObjectStore(tmp_path / "objects")
+        base = f"/v1/projects/{PROJECT}/sessions"
+        created = client.post(base, json={"brief": BRIEF, "preset": "quick"})
+        assert created.status_code == 201, created.text
+        session_id = created.json()["session_id"]
+        assert client.post(base, json={"brief": BRIEF, "preset": "leisurely"}).status_code == 422
+
+        def wait(wanted: str) -> dict[str, Any]:
+            for _ in range(600):
+                response = client.get(f"{base}/{session_id}")
+                if response.status_code == 404:  # the row appears once session_start ran
+                    time.sleep(0.2)
+                    continue
+                detail = response.json()
+                if detail["session"]["status"] == wanted:
+                    return detail
+                assert detail["session"]["status"] != "failed", detail
+                time.sleep(0.2)
+            raise AssertionError(f"never reached {wanted}")
+
+        wait("awaiting_approval")
+        assert client.post(f"{base}/{session_id}/steer").status_code == 422
+        assert client.post(f"{base}/{session_id}/dance").status_code == 422
+        missing = client.post(f"{base}/ses_NOSUCH0001/approve")
+        assert missing.status_code == 404 and missing.json()["code"] == "SESSION_NOT_FOUND"
+        approved = client.post(f"{base}/{session_id}/approve")
+        assert approved.status_code == 200 and approved.json()["signal"] == "approve"
+        detail = wait("approved")
+        assert detail["gate"]["verdict"] == "ALLOWED" and detail["package_key"]
+        assert [s["phase"] for s in detail["timeline"] if s["kind"] == "phase_changed"][
+            -1
+        ] == "package"
+        listed = client.get(base).json()["sessions"]
+        assert [s["session_id"] for s in listed] == [session_id]
+        assert client.get(f"{base}/ses_NOSUCH0001").status_code == 404

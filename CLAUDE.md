@@ -59,6 +59,15 @@ Do not change the contracts.
    the projection, never written to the ledger.
 10. **Until confidence is calibrated (M14), gating and inclusion decisions use grade and
     epistemic status only. Confidence may rank, never decide.**
+11. **A session is a durable workflow; its side effects are activities.** The Temporal
+    workflow (`architect.sessions.workflow`) is deterministic: no I/O, no clock but
+    `workflow.now()`, no randomness, and it imports nothing from the database, the gateway or
+    the Arbiter (`tests/test_sessions.py` enforces it). Every activity is idempotent: Arbiter
+    keys, version, claim, proposal, task and message ids derive from
+    (session_id, phase, round, step), never from time or a random id. Agents propose and the
+    Arbiter decides; its rejections go back to the agent as structured errors for a bounded
+    retry. Every agent message is a typed protocol message in the append-only `ag_messages`.
+    Waivers are human-only: the Architect may only request one, as an open risk.
 
 ## Layout
 
@@ -83,6 +92,12 @@ Do not change the contracts.
   (`parse.py`), the two extraction passes (`extract.py`), commit (`commit.py`), the job runner
   (`pipeline.py`), grades and confidence (`grades.py`); `config/ingest.yaml` and
   `config/confidence.yaml` hold their settings.
+- `src/architect/sessions/`: design sessions (M6). `workflow.py` is the deterministic
+  Temporal workflow (phases, loop, convergence rule, signals, status query); `activities.py`
+  every side effect; `agent.py` the Architect agent v1 (prompts, output schemas, protocol
+  messages, `ag_messages`); `compiler.py` the Context Compiler; `linter.py` the requirement
+  linter; `worker.py` the Temporal worker; `service.py` the client side (start, signal,
+  query, the `ses_sessions` read model); `config/presets.yaml` the presets.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -93,7 +108,13 @@ pip install -e ".[dev]"
 docker compose up -d postgres            # or any Postgres 16; set ARCHITECT_DATABASE_URL
 ruff check .
 pytest
+docker compose --profile sessions up -d  # Temporal dev server for sessions; then:
+architect worker                         # the session worker (ARCHITECT_TEMPORAL_ADDRESS)
 ```
+
+The session tests run on Temporal's time-skipping test environment (downloaded on first
+use); two of them need a real dev server and start one themselves unless
+`ARCHITECT_TEMPORAL_ADDRESS` names one, as CI does.
 
 Live provider tests are marked `live` and deselected by default; `pytest -m live -v` with a
 key in the shell runs them.
@@ -111,11 +132,11 @@ Tests create a throwaway schema per test inside the database named by
 - Adding a check means: a `c0NN.py` module with `CHECK_ID`, `USES` and `check`, its entry in
   `checks/catalog.json` and in `REGISTRY`, and unit tests for its pass, fail and empty cases.
 - After a PR merges, delete its remote branch — don't ask.
-- The Windows local-database check is deferred to M6 (Docker Desktop). Do not raise it as
-  an open question before then.
-- Out of scope until their milestone: agents and sessions, Temporal workflows, web and arXiv
-  connectors, entity resolution beyond exact slugs, a graph database, vector search, UI, auth,
-  multi-tenancy.
+- Adding an activity means: an idempotency scheme derived from (session, phase, round, step),
+  a result the workflow can act on without I/O, and a test in which it is retried or replayed.
+- Out of scope until their milestone: the alternatives tournament (K > 1, M11), AI adversaries
+  (M10), web research and the web and arXiv connectors, entity resolution beyond exact slugs,
+  a graph database, vector search, UI, auth, multi-tenancy.
 
 ### Module report (mandatory)
 Every session ends with exactly this block and nothing after it:
