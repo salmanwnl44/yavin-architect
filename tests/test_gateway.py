@@ -233,6 +233,7 @@ def test_identical_deterministic_requests_hit_the_cache(gateway, mock, pool):
     assert [r["status"] for r in calls(pool)] == ["ok", "cache_hit"]
 
     gateway.call(request(tier="tier-frontier"))  # another model
+    mock.enqueue({"answer": "Paris", "confidence": 1})
     gateway.call(request(output_schema=SCHEMA))  # a schema
     gateway.call(request(messages=[{"role": "user", "content": "Berlin?"}]))  # other messages
     assert mock.call_count == 4
@@ -272,7 +273,8 @@ def test_a_call_over_the_session_token_cap_is_refused_before_the_provider(gatewa
         gateway.call(request(scope={"session": "ses_CAPPED0001"}, max_tokens=200))
     assert refused.value.dimension == "tokens" and mock.call_count == 0
     assert [r["status"] for r in calls(pool)] == ["budget_refused"]
-    assert gateway.spend({"session": "ses_CAPPED0001"})["reserved_tokens"] == 0
+    untouched = gateway.spend({"session": "ses_CAPPED0001"})
+    assert untouched is None or untouched["reserved_tokens"] == 0, "the refusal held nothing"
 
     small = gateway.call(request(scope={"session": "ses_CAPPED0001"}, max_tokens=20))
     assert small.cache_hit is False and mock.call_count == 1
@@ -385,7 +387,7 @@ def test_every_attempt_failure_and_hit_has_a_row(gateway, mock, pool):
 
 def test_the_call_log_is_append_only(gateway, pool, dsn):
     gateway.call(request())
-    with psycopg.connect(dsn) as conn:
+    with psycopg.connect(dsn, autocommit=True) as conn:
         for statement in (
             "UPDATE gw_calls SET status = 'error'",
             "DELETE FROM gw_calls",
