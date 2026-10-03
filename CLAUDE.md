@@ -42,6 +42,10 @@ Do not change the contracts.
    are rebuildable from the ledger alone (`architect rebuild-projections`). The projector
    never writes an event and never calls the Arbiter. The fold is deterministic: no
    wall-clock values and no generated ids. The GET endpoints over them read `proj_*` only.
+7. **Checks are pure.** A check is `check(model, ctx, params) -> CheckOutcome` with no
+   database, network, clock or randomness, and imports nothing from the api, db, Arbiter or
+   projector modules (`tests/test_architecture.py` enforces it). The runner records every
+   result as a `check.result` event through the Arbiter, idempotent on the inputs hash.
 
 ## Layout
 
@@ -56,6 +60,9 @@ Do not change the contracts.
 - `src/architect/projector.py`: the projector worker (cursor, batches, LISTEN/NOTIFY, rebuild,
   content hash).
 - `src/architect/readmodel.py`: queries over `proj_*` for the GET endpoints.
+- `src/architect/checks/`: the checks engine. `c0NN.py` are pure check functions,
+  `catalog.json` + `catalog.py` the catalog and registry, `runner.py` the only module there
+  that reads a database or records results (through the Arbiter).
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -78,6 +85,8 @@ Tests create a throwaway schema per test inside the database named by
   table in `PROGRESS.md`, and a refusal test for every new rejection code.
 - Adding a read model means: its table in `schema.sql` and in `PROJ_TABLES`, a handler in
   `projections.py`, and a test that a rebuild reproduces it.
+- Adding a check means: a `c0NN.py` module with `CHECK_ID`, `USES` and `check`, its entry in
+  `checks/catalog.json` and in `REGISTRY`, and unit tests for its pass, fail and empty cases.
 - Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
   workflows, a graph database, vector search, UI, auth, multi-tenancy.
 
