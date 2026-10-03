@@ -1,4 +1,4 @@
-# Yavin Architect — Phase 0 Contracts (FROZEN v1.0)
+# Yavin Architect — Phase 0 Contracts (FROZEN v1.1)
 
 These five schemas are the frozen interfaces everything in Phase 1 builds against.
 They are the machine-readable form of the architecture spec; nothing in them is new —
@@ -14,8 +14,10 @@ each file implements a section of the spec, and the spec wins on any conflict un
 
 ## Status and versioning rules
 
-- **Status: FROZEN v1.0** — signed off by the owner. What changed from the v0.1 draft is in
-  `CHANGELOG.md`.
+- **Status: FROZEN v1.1** — signed off by the owner. `CHANGELOG.md` lists what changed from
+  the v0.1 draft (v1.0) and from v1.0 (v1.1). v1.1 is a minor version: it only adds optional
+  fields and documents rules, so every document valid under v1.0 is valid under v1.1, and the
+  schema `$id`s keep the `/v1/` path.
 - A frozen contract never changes in place. A change is a **new version** plus a
   migration event in the ledger (the §5-P2 discipline applied to the contracts themselves).
 - v1.0 keeps each file **self-contained** (shared enums like `EpistemicStatus`, `Severity`,
@@ -38,9 +40,26 @@ refuses events that break them.
   (its own `prev_hash` included), keys sorted, separators `,` and `:`, non-ASCII characters
   not escaped, encoded as UTF-8. The first event of a project (`seq` 0) omits the field.
 - **`model.version_created`.** Without `parent` it is the genesis version and is allowed only
-  while the project has no head. With `parent`, the parent must be a model version already
-  committed in the same project. Either way the new version becomes the project's single
-  head. Multiple heads for alternative designs are deferred to v1.1.
+  while the project has no head (`DUPLICATE_GENESIS`). With `parent`, the parent must be a
+  model version already committed in the same project (`UNKNOWN_MODEL_VERSION`), and the new
+  version's model is a copy of the parent's (v1.1, P-7; `fixture/replay.py` folds it so).
+  Either way the new version becomes the project's single head. Multiple heads for
+  alternative designs are planned for v1.2, alongside the alternatives tournament (M11).
+- **Model versions fold deterministically (v1.1, P-8).** A `model.patch_committed` or
+  `model.patch_proposed` must apply to the head's model: every `update_element` or
+  `remove_element` target exists (`PATCH_TARGET_MISSING`), and the resulting model validates
+  against `system_model.schema.json` (`INVALID_MODEL_RESULT`). A `version_id` is used once
+  per project (`DUPLICATE_VERSION_ID`), whether by `model.version_created` or
+  `model.patch_committed`. The Arbiter refuses what breaks these; the read models and
+  `fixture/replay.py` fold with the same rules.
+- **Capacity params bind to elements (v1.1, P-9).** A `CapacityParam` names the element it
+  describes in `applies_to` and what it measures in `metric` (`max_qps`, `availability`).
+  Without them, the v1.0 convention `name = "<element_id>.<metric>"` is still read, and a
+  check result that relied on it records `evidence.deprecated`; the convention is removed in
+  v2.0. `applies_to` must resolve to an element (check C-013).
+- **Check results name their subject (v1.1, P-10).** A `check.result` carries
+  `model_version` and `as_of_seq`; results without them (v1.0) are read as judging the head
+  of their time.
 - **Proposal ids.** `claim.proposed` and `model.patch_proposed` share one `proposal_id`
   namespace per project, and an id is used at most once. `from_proposal` on
   `claim.committed` must name a claim proposal, and on `model.patch_committed` a model patch

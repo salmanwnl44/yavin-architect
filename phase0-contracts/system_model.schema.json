@@ -123,12 +123,15 @@
     },
     "CapacityParam": {
       "type": "object", "additionalProperties": false,
+      "description": "A measured or declared quantity. v1.1: applies_to and metric bind it to an element; without them, checks read the v1.0 naming convention name = \"<element_id>.<metric>\" (deprecated, removed in v2.0).",
       "required": ["id", "name", "value", "unit"],
       "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
         "value": { "type": "number" },
         "unit": { "type": "string" },
+        "applies_to": { "type": "string", "description": "v1.1: the id of the element this quantity describes. Must resolve to an element of the model (check C-013)." },
+        "metric": { "type": "string", "description": "v1.1: what is measured, e.g. \"max_qps\" (a throughput) or \"availability\" (a ratio)." },
         "distribution": { "type": "object", "additionalProperties": false, "properties": { "kind": { "enum": ["constant", "poisson", "lognormal", "empirical"] }, "params": { "type": "object" } } }
       }
     },

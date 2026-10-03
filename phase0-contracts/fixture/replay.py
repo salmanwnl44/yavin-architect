@@ -16,6 +16,7 @@ state and prints the gate verdict. Usage:
 Schemas are found relative to this file (../*.schema.json), so it runs from any
 working directory.
 """
+import copy
 import json
 import sys
 from pathlib import Path
@@ -90,8 +91,9 @@ proposals = set()      # claim proposal ids
 patch_proposals = set()
 open_objections = {}   # objection_id -> severity
 resolved_objections = set()
-model = None           # current folded model
+model = None           # the head's folded model
 head = None            # current model version id
+models = {}            # version_id -> that version's folded model (v1.1, P-7)
 versions = []
 decisions, waivers, checkpoints, check_events = [], [], [], []
 event_type_by_id = {}
@@ -154,8 +156,17 @@ for i, ev in enumerate(events):
         status[p["claim_id"]] = p["to"]
 
     elif etype == "model.version_created":
+        # v1.1 (P-7): a version created from a parent starts as a copy of the parent's model.
+        parent = p.get("parent")
+        if parent is None:
+            model = {"elements": {}, "links": {}}
+        elif parent in models:
+            model = copy.deepcopy(models[parent])
+        else:
+            failures.append(f"{where}: parent {parent} is not a committed model version")
+            model = {"elements": {}, "links": {}}
         head = p["version_id"]
-        model = {"elements": {}, "links": {}}
+        models[head] = model
         versions.append(head)
 
     elif etype == "model.patch_proposed":
@@ -169,8 +180,11 @@ for i, ev in enumerate(events):
         require(p["base_version"] == head, f"{where}: base {p['base_version']} != head {head} (chain broken)")
         if "from_proposal" in p:
             require(p["from_proposal"] in patch_proposals, f"{where}: unknown proposal {p['from_proposal']}")
+        # v1.1 (P-7): the patch applies to its base version's model and yields a new version.
+        model = copy.deepcopy(models.get(p["base_version"], model))
         apply_patch(p["patch"], where)
         head = p["version_id"]
+        models[head] = model
         versions.append(head)
 
     elif etype == "objection.raised":

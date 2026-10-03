@@ -1,5 +1,26 @@
 # Contract changelog
 
+## v1.1 — frozen 2026-10-03
+
+A minor version: optional fields and documented rules only. Every document valid under v1.0
+is valid under v1.1; the schema `$id`s keep `/contracts/v1/`; `fixture/fixture_ledger.jsonl`
+is byte-identical and `fixture/replay.py` prints the same output on it.
+
+- **P-7: `replay.py` folds a version created from a parent as a copy of the parent.** It now
+  keeps a model per version and applies each patch to its base version's model. The
+  reference, the Arbiter and the read models agree.
+- **P-8: the model fold rules are documented.** README and the `ModelPatchProposed`,
+  `ModelPatchCommitted` and `ModelVersionCreated` descriptions name what the Arbiter
+  enforces: `PATCH_TARGET_MISSING`, `INVALID_MODEL_RESULT`, `DUPLICATE_VERSION_ID`,
+  `UNKNOWN_MODEL_VERSION`, `DUPLICATE_GENESIS`. No behaviour change.
+- **P-9: `CapacityParam.applies_to` and `CapacityParam.metric`** (optional) bind a quantity
+  to an element. The v1.0 naming convention stays accepted and is marked deprecated, for
+  removal in v2.0.
+- **P-10: `CheckResult.model_version` and `CheckResult.as_of_seq`** (optional) name what a
+  result judges and the knowledge it judged against.
+
+Multi-head branching (deferred from P-4) is not in v1.1; it is planned for v1.2 with M11.
+
 ## v1.0 — frozen 2026-10-02
 
 The v0.1 draft, with the five proposals from `contracts-PROPOSALS.md` decided and applied.
