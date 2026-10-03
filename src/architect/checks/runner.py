@@ -165,6 +165,9 @@ def run(
                     "element_refs": outcome.element_refs,
                     "status": outcome.status,
                     "evidence": evidence,
+                    # contracts v1.1 (P-10); the evidence keeps copies for v1.0 readers
+                    "model_version": version_id,
+                    "as_of_seq": as_of_seq,
                 },
                 "idempotency_key": f"check:{version_id}:{entry['id']}:{entry['version']}:{digest}",
             }

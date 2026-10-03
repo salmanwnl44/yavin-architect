@@ -124,6 +124,7 @@
     },
     "ModelPatchProposed": {
       "type": "object", "additionalProperties": false,
+      "description": "A proposed patch is held to the rules of a committed one (Arbiter-enforced): base_version must be the head (BASE_MOVED), every update_element or remove_element target must exist in the head's model (PATCH_TARGET_MISSING), and the model the patch would produce must validate against system_model.schema.json (INVALID_MODEL_RESULT).",
       "required": ["proposal_id", "base_version", "patch"],
       "properties": {
         "proposal_id": { "type": "string", "description": "Unique within the project across claim proposals and model patch proposals, which share one namespace. Arbiter-enforced." },
@@ -134,6 +135,7 @@
     },
     "ModelPatchCommitted": {
       "type": "object", "additionalProperties": false,
+      "description": "Commits version_id as the model that applying patch to base_version's model produces. Arbiter-enforced: base_version is the head (BASE_MOVED); every update_element or remove_element target exists (PATCH_TARGET_MISSING); the resulting model validates against system_model.schema.json (INVALID_MODEL_RESULT); version_id was never used in the project (DUPLICATE_VERSION_ID).",
       "required": ["version_id", "base_version", "patch"],
       "properties": {
         "version_id": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
@@ -145,7 +147,7 @@
     "ModelVersionCreated": {
       "type": "object", "additionalProperties": false,
       "required": ["version_id"],
-      "description": "Creates a model version and makes it the project's head. Without `parent` it is the genesis version, allowed only while the project has no head. With `parent` it must name a model version already committed in the same project. Both rules are Arbiter-enforced. A project has one head in v1.0; multiple heads for alternative designs are deferred to v1.1.",
+      "description": "Creates a model version and makes it the project's head. Without `parent` it is the genesis version, allowed only while the project has no head (DUPLICATE_GENESIS). With `parent` it must name a model version already committed in the same project (UNKNOWN_MODEL_VERSION), and the new version's model is a copy of the parent's (v1.1, P-7). version_id must not have been used in the project (DUPLICATE_VERSION_ID). All Arbiter-enforced. A project has one head; multiple heads for alternative designs are planned for v1.2.",
       "properties": {
         "version_id": { "type": "string" },
         "parent": { "type": "string", "description": "A model version already committed in the same project (by model.version_created or model.patch_committed)." }
@@ -205,7 +207,9 @@
         "check_id": { "type": "string", "pattern": "^C-[0-9]{3}$" },
         "element_refs": { "type": "array", "items": { "type": "string" } },
         "status": { "enum": ["pass", "fail", "error", "skipped"] },
-        "evidence": { "type": "object" }
+        "evidence": { "type": "object" },
+        "model_version": { "type": "string", "description": "v1.1: the model version the result judges." },
+        "as_of_seq": { "type": "integer", "minimum": 0, "description": "v1.1: the project's knowledge (claims, waivers) the check ran against: everything committed up to this seq." }
       }
     },
     "ExperimentRecorded": {

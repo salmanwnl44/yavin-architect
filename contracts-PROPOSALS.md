@@ -4,6 +4,7 @@ Friction found while building against `phase0-contracts/` (v0.1 draft). The owne
 five entries, and they were applied in the one sanctioned edit that froze the contracts as
 v1.0; `phase0-contracts/CHANGELOG.md` is the record on the contract side. New friction goes
 below as P-6 onwards and waits for the next contract version: the contracts are frozen again.
+v1.1 (module C2) applied P-7 to P-10; P-6 stays open.
 
 ## P-1: `validate.py` fails on Windows
 
@@ -83,7 +84,8 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 
 ## P-7: `replay.py` empties the model on every `model.version_created`
 
-**Status: open, deferred to v1.1.**
+**Status: applied in v1.1.** `replay.py` keeps a model per version; a version created from a
+parent is a copy of the parent's. Its output on the fixture is unchanged.
 
 - **Problem.** v1.0 lets `model.version_created` carry a `parent` (P-4), but `replay.py` folds
   every `model.version_created` to an empty model, parent or not. The contracts do not say
@@ -97,7 +99,8 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 
 ## P-8: the model rules the Arbiter enforces are not in the contracts
 
-**Status: open, deferred to v1.1.**
+**Status: applied in v1.1.** The README and the `ModelPatchProposed`, `ModelPatchCommitted`
+and `ModelVersionCreated` descriptions state the rules with the shipped rejection codes.
 
 - **Problem.** Since M1.1 the Arbiter folds every model version before committing it and
   refuses what `replay.py` would refuse: an `update_element` on a missing target, and a
@@ -115,7 +118,9 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 
 ## P-9: CapacityParam has no `applies_to`
 
-**Status: open, for v1.1.**
+**Status: applied in v1.1.** `applies_to` and `metric` are optional fields; the naming
+convention is still read as a fallback and recorded as `evidence.deprecated`, for removal in
+v2.0.
 
 - **Problem.** `system_model.schema.json` gives `CapacityParam` an `id`, a `name`, a `value`
   and a `unit`, but nothing that binds it to the element it describes. Checks C-005 and
@@ -128,7 +133,8 @@ below as P-6 onwards and waits for the next contract version: the contracts are 
 
 ## P-10: CheckResult names no model version
 
-**Status: open, for v1.1.**
+**Status: applied in v1.1.** `model_version` and `as_of_seq` are optional fields on
+`CheckResult`; the runner sets both and keeps the evidence copies.
 
 - **Problem.** `CheckResult` in `ledger_events.schema.json` has `result_id`, `check_id`,
   `element_refs`, `status` and a free `evidence` object, but no field for the model version

@@ -90,11 +90,26 @@ def replicas(model: Model, component: Element) -> tuple[int, bool]:
     return 1, True
 
 
-# contracts v1.0 gives CapacityParam no applies_to (contracts-PROPOSALS.md P-9); the
-# convention `name = "<element_id>.<metric>"` binds a param to an element, here only.
-def capacity_param(model: Model, element_id: str, metric: str) -> Element | None:
+# A capacity param binds to an element through applies_to and metric (contracts v1.1, P-9).
+# The v1.0 convention `name = "<element_id>.<metric>"` is still read, here only, and is
+# deprecated: a check that relied on it says so in its evidence. Removed in v2.0.
+DEPRECATED_CONVENTION = "name-convention capacity param"
+
+
+def capacity_binding(model: Model, element_id: str, metric: str) -> tuple[Element | None, bool]:
+    """(the param describing `metric` of the element, whether it was found by the deprecated
+    naming convention)."""
+    params = elements(model, "capacity_params")
+    for param in params:
+        if param.get("applies_to") == element_id and param.get("metric") == metric:
+            return param, False
     wanted = f"{element_id}.{metric}"
-    for param in elements(model, "capacity_params"):
-        if param["name"] == wanted:
-            return param
-    return None
+    for param in params:
+        if "applies_to" not in param and "metric" not in param and param["name"] == wanted:
+            return param, True
+    return None, False
+
+
+def capacity_param(model: Model, element_id: str, metric: str) -> Element | None:
+    """The param describing `metric` of the element, by field or by convention, or None."""
+    return capacity_binding(model, element_id, metric)[0]
