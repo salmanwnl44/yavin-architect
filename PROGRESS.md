@@ -756,11 +756,12 @@ Multi-head branching is not in v1.1; the README says it is planned for v1.2 with
 
 The database-backed tests have only run on Linux in CI. The Windows development machine has
 had no reachable PostgreSQL since the fixture landed, so they have not run there against the
-fixture, the v1.0 rules, M1.1, M2 or M3. What does run on Windows is green: `validate.py`,
-`replay.py`, `ruff check .`, and the 51 tests that need no database.
+fixture, the v1.0 rules, M1.1, M2, M3 or C2. What does run on Windows is green: `validate.py`,
+`replay.py`, `ruff check .`, and the 59 tests that need no database. The check is deferred to
+M6 (Docker Desktop), per CLAUDE.md.
 
 ## Open
 
-1. **Run the suite once on Windows** against a local PostgreSQL 16, to confirm what CI shows.
+1. **The Windows local-database check is deferred to M6** (Docker Desktop), per CLAUDE.md.
 2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) stays open; P-7 to
    P-10 were applied in v1.1. Multi-head branching is planned for contracts v1.2 with M11.
