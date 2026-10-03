@@ -57,6 +57,8 @@ Do not change the contracts.
    is not in its segment, wraps every segment as untrusted data, and never executes a tool
    (`tests/test_ingestion.py` enforces the import rule). Grade and confidence are computed in
    the projection, never written to the ledger.
+10. **Until confidence is calibrated (M14), gating and inclusion decisions use grade and
+    epistemic status only. Confidence may rank, never decide.**
 
 ## Layout
 
