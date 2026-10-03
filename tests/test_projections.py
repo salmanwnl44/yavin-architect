@@ -8,8 +8,6 @@ ledger, because the fixture refutes nothing.
 from __future__ import annotations
 
 import contextlib
-import io
-import json
 import re
 import subprocess
 import sys
@@ -25,50 +23,17 @@ import architect
 from architect import ledger, projector, readmodel
 from architect.arbiter import Arbiter
 from architect.cli import main
-from architect.contracts import contracts_dir, first_error, load_contracts
+from architect.contracts import first_error, load_contracts
 from architect.db import EVENTS_CHANNEL
-from architect.projections import (
-    HANDLERS,
-    NOT_PROJECTED,
-    PROJ_TABLES,
-    PROJECTION,
-    ProjectionError,
-    apply_patch,
-    empty_model,
-)
+from architect.projections import HANDLERS, NOT_PROJECTED, PROJ_TABLES, PROJECTION, ProjectionError
 from architect.projector import Projector
-from builders import as_candidate, candidate, claim, claim_committed, ident, sample_ledger, source
+from builders import as_candidate, candidate, claim, claim_committed, ident, source
 from conftest import PROJECT
+from replay_reference import fixture_events, normalized, reference
 
-FIXTURE_DIR = contracts_dir() / "fixture"
-REPLAY = FIXTURE_DIR / "replay.py"
 FIX = "proj-architect-dogfood"  # the project the fixture ledger names
 FIX_VERSIONS = ["mv_FIXGENESIS", "mv_FIXV000001", "mv_FIXV000002", "mv_FIXV000003"]
 LAST_SEQ = 39
-
-
-def fixture_events() -> list[dict[str, Any]]:
-    text = (FIXTURE_DIR / "fixture_ledger.jsonl").read_text(encoding="utf-8")
-    return [json.loads(line) for line in text.splitlines() if line.strip()]
-
-
-def reference() -> dict[str, Any]:
-    """replay.py's folded state, obtained by running its source unmodified."""
-    namespace: dict[str, Any] = {"__name__": "__main__", "__file__": str(REPLAY)}
-    argv, sys.argv = sys.argv, [str(REPLAY)]
-    try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            try:
-                exec(compile(REPLAY.read_text(encoding="utf-8"), str(REPLAY), "exec"), namespace)
-            except SystemExit as stop:
-                assert not stop.code, "replay.py did not replay the fixture green"
-    finally:
-        sys.argv = argv
-    return namespace
-
-
-def normalized(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
 def commit_fixture(pool) -> None:
@@ -134,30 +99,6 @@ def get(client, path: str, project: str = FIX, **params: Any) -> Any:
 def test_every_event_type_is_projected_or_explicitly_not():
     assert set(HANDLERS) | NOT_PROJECTED == set(load_contracts().event_types)
     assert not set(HANDLERS) & NOT_PROJECTED
-
-
-def test_apply_patch_folds_the_fixture_into_replays_final_model():
-    model = None
-    for event in fixture_events():
-        payload = event["payload"]
-        if event["type"] == "model.version_created":
-            model = empty_model(FIX, payload["version_id"])
-        elif event["type"] == "model.patch_committed":
-            model = apply_patch(model, payload["patch"], payload["version_id"])
-    assert normalized(model) == normalized(reference()["final_model"])
-
-
-def test_apply_patch_leaves_its_base_untouched_and_refuses_a_missing_target():
-    base = empty_model("p", "mv_0000000001")
-    patch = {"ops": [{"op": "add_link", "link_type": "satisfies", "link": {"a": 1}}]}
-    assert apply_patch(base, patch, "mv_0000000002")["links"] == {"satisfies": [{"a": 1}]}
-    assert base == empty_model("p", "mv_0000000001")
-
-    update = {"op": "update_element", "element_type": "flows", "element_id": "x", "element": {}}
-    with pytest.raises(ProjectionError, match="target x not found"):
-        apply_patch(base, {"ops": [update]}, "mv_0000000002")
-    with pytest.raises(ProjectionError, match="element_type"):
-        apply_patch(base, {"ops": [{"op": "add_element", "element": {}}]}, "mv_0000000002")
 
 
 def test_projections_never_write_events_or_reach_the_arbiter():
@@ -672,24 +613,51 @@ def test_a_version_created_from_a_parent_starts_as_the_parents_model(pool, worke
     assert readmodel.head_model(pool, PROJECT)["version_id"] == mv4
 
 
-def test_an_event_that_cannot_be_folded_stops_the_projector_in_front_of_it(pool, worker, cli):
-    """The M1 sample ledger commits a patch that does not produce a valid system model."""
+def test_an_event_that_cannot_be_folded_stops_the_projector_in_front_of_it(dsn, pool, worker, cli):
+    """A ledger written before M1.1 can hold a patch that leaves no valid model. The Arbiter
+    refuses such a patch now, so one is appended here the way only history could: raw SQL."""
     ledger.create_project(pool, PROJECT)
     arbiter = Arbiter(pool)
-    for event in sample_ledger(PROJECT):
-        arbiter.submit(PROJECT, as_candidate(event))
+    mv1 = ident("mv", "v1")
+    arbiter.submit(PROJECT, source())
+    arbiter.submit(PROJECT, candidate("model.version_created", {"version_id": mv1}))
+    bad_patch = {
+        "base_version": mv1,
+        "rationale": "pre-M1.1",
+        "ops": [{"op": "add_element", "element_type": "component", "element": {"name": "x"}}],
+    }
+    legacy = candidate(
+        "model.patch_committed",
+        {"version_id": ident("mv", "v2"), "base_version": mv1, "patch": bad_patch},
+    ) | {"event_id": ident("evt", "legacy"), "ts": "2026-10-02T06:00:00+05:30"}
+    with psycopg.connect(dsn) as conn:
+        conn.execute(
+            "INSERT INTO events (project_id, seq, event_id, ts, ts_wire, actor, type, payload, "
+            "idempotency_key) VALUES (%s, 2, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                PROJECT,
+                legacy["event_id"],
+                legacy["ts"],
+                legacy["ts"],
+                psycopg.types.json.Jsonb(legacy["actor"]),
+                legacy["type"],
+                psycopg.types.json.Jsonb(legacy["payload"]),
+                legacy["idempotency_key"],
+            ),
+        )
+    arbiter.submit(PROJECT, source("after"))
 
-    with pytest.raises(ProjectionError, match="seq 9 .*not a valid system model"):
+    with pytest.raises(ProjectionError, match="seq 2 .*not a valid system model"):
         worker.catch_up()
-    assert cursor(pool, PROJECT) == 8, "everything before the event is projected"
-    assert len(readmodel.list_claims(pool, PROJECT)) == 2
+    assert cursor(pool, PROJECT) == 1, "everything before the event is projected"
+    assert readmodel.head_model(pool, PROJECT)["version_id"] == mv1
 
     with pytest.raises(ProjectionError):
         worker.catch_up()
-    assert cursor(pool, PROJECT) == 8
+    assert cursor(pool, PROJECT) == 1
 
     code, _, err = cli("project", "--once")
-    assert code == 1 and "projection stopped: seq 9" in err
+    assert code == 1 and "projection stopped: seq 2" in err
 
 
 def test_projection_is_per_project(pool, projected, worker):

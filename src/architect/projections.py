@@ -6,21 +6,21 @@ the same rows, with no wall-clock values and no generated ids. It never writes t
 and never calls the Arbiter. The projector (architect.projector) calls it inside the
 transaction that advances the cursor.
 
-The model fold follows phase0-contracts/fixture/replay.py (`apply_patch`).
+Model versions are folded through architect.model_fold, the fold the Arbiter also uses, so
+a version the Arbiter committed always materializes here.
 """
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
 from architect.contracts import first_error, json_path, load_contracts
+from architect.model_fold import Model, PatchError, apply_patch, child_of, empty_model
 
 Event = dict[str, Any]
-Model = dict[str, Any]
 
 PROJECTION = "read_models"
 
@@ -72,43 +72,6 @@ WHERE c.project_id = %(pid)s
 
 class ProjectionError(Exception):
     """An event cannot be folded: a projector bug, or a ledger the read models cannot hold."""
-
-
-def empty_model(project_id: str, version_id: str) -> Model:
-    return {"version_id": version_id, "project_id": project_id, "elements": {}, "links": {}}
-
-
-def apply_patch(base: Model, patch: dict[str, Any], version_id: str) -> Model:
-    """The model `patch` produces from `base`. Mirrors replay.py's apply_patch; `base` is kept."""
-    model = copy.deepcopy(base)
-    model["version_id"] = version_id
-    elements, links = model["elements"], model["links"]
-    for i, op in enumerate(patch["ops"]):
-        try:
-            kind = op["op"]
-            if kind == "add_element":
-                elements.setdefault(op["element_type"], []).append(op["element"])
-            elif kind == "update_element":
-                target = op.get("element_id")
-                for element in elements.get(op["element_type"], []):
-                    if element.get("id") == target:
-                        element.update(op["element"])
-                        break
-                else:
-                    raise ProjectionError(f"ops[{i}]: update_element target {target} not found")
-            elif kind == "remove_element":
-                rows = elements.get(op["element_type"], [])
-                elements[op["element_type"]] = [
-                    element for element in rows if element.get("id") != op.get("element_id")
-                ]
-            elif kind == "add_link":
-                links.setdefault(op["link_type"], []).append(op["link"])
-            elif kind == "remove_link":
-                rows = links.get(op["link_type"], [])
-                links[op["link_type"]] = [link for link in rows if link != op.get("link")]
-        except KeyError as missing:
-            raise ProjectionError(f"ops[{i}] ({op.get('op')}) has no {missing}") from missing
-    return model
 
 
 class _Fold:
@@ -225,16 +188,14 @@ class _Fold:
         if parent is None:
             model = empty_model(self.pid, version_id)
         else:
-            # A version created from a parent starts as that parent's model.
-            model = copy.deepcopy(self._model(parent))
-            model["version_id"] = version_id
+            model = child_of(self._model(parent), version_id)
         self._store_version(version_id, parent, model)
 
     def model_patch_committed(self) -> None:
         version_id, base = self.payload["version_id"], self.payload["base_version"]
         try:
             model = apply_patch(self._model(base), self.payload["patch"], version_id)
-        except ProjectionError as error:
+        except PatchError as error:
             raise ProjectionError(f"{self._where()}: {error}") from error
         self._store_version(version_id, base, model)
 
