@@ -1012,6 +1012,7 @@ class SessionActivities:
             "requirement_trace": trace,
             "open_risks": risks,
             "waiver_requests": args.get("waiver_requests", []),
+            "steer_claims": args.get("steer_claims", []),
             "adrs": adrs,
             "rounds": args.get("rounds", []),
             "spend": spend,

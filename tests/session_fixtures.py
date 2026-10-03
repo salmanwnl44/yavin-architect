@@ -435,6 +435,93 @@ def make_activities(
     )
 
 
+class _Point:
+    """One synchronization point: an activity starting (optionally held there) or finishing."""
+
+    def __init__(self, kind: str, name: str, match: dict[str, Any], timeout: float) -> None:
+        self.kind, self.name, self.match, self.timeout = kind, name, match, timeout
+        self.used = False
+        self.reached = threading.Event()
+        self.released = threading.Event()
+
+    def matches(self, name: str, args: dict[str, Any]) -> bool:
+        return name == self.name and all(args.get(k) == v for k, v in self.match.items())
+
+    async def wait(self) -> None:
+        """Until the activity got here. Event-driven: no polling, no sleeps."""
+        reached = await asyncio.to_thread(self.reached.wait, self.timeout)
+        assert reached, f"the session never reached {self.kind} of {self.name} {self.match}"
+
+    def release(self) -> None:
+        self.released.set()
+
+
+class ActivityGate:
+    """Deterministic synchronization with a running session through the activities' hooks.
+
+    `hold(name, **match)` blocks the first matching activity at its start until `release()`:
+    the workflow is then provably between two step boundaries, and a signal sent meanwhile
+    is in its history before the activity's result. `on_start` and `on_finish` only tell.
+    Each point is used once, in registration order, so two pauses can be told apart. The
+    worker thread sets a threading.Event; the test awaits it, so nothing depends on timing.
+    """
+
+    def __init__(self, activities: SessionActivities, timeout: float = 120.0) -> None:
+        self.started: list[tuple[str, dict[str, Any]]] = []
+        self._points: list[_Point] = []
+        self._lock = threading.Lock()
+        self._timeout = timeout
+        activities.before_activity = self._before
+        activities.after_activity = self._after
+
+    def _point(self, kind: str, name: str, match: dict[str, Any]) -> _Point:
+        point = _Point(kind, name, match, self._timeout)
+        with self._lock:
+            self._points.append(point)
+        return point
+
+    def hold(self, name: str, **match: Any) -> _Point:
+        return self._point("hold", name, match)
+
+    def on_start(self, name: str, **match: Any) -> _Point:
+        return self._point("start", name, match)
+
+    def on_finish(self, name: str, **match: Any) -> _Point:
+        return self._point("finish", name, match)
+
+    def names(self) -> list[str]:
+        with self._lock:
+            return [name for name, _ in self.started]
+
+    def release_all(self) -> None:
+        with self._lock:
+            for point in self._points:
+                point.released.set()
+
+    def _take(self, kinds: tuple[str, ...], name: str, args: dict[str, Any]) -> list[_Point]:
+        taken: list[_Point] = []
+        with self._lock:
+            for kind in kinds:
+                for point in self._points:
+                    if point.kind == kind and not point.used and point.matches(name, args):
+                        point.used = True
+                        taken.append(point)
+                        break
+        return taken
+
+    def _before(self, name: str, args: dict[str, Any]) -> None:
+        with self._lock:
+            self.started.append((name, args))
+        for point in self._take(("start", "hold"), name, args):
+            point.reached.set()
+            if point.kind == "hold" and not point.released.wait(self._timeout):
+                raise RuntimeError(f"{name} was held for more than {self._timeout}s")
+
+    def _after(self, name: str, args: dict[str, Any], result: dict[str, Any]) -> None:
+        for point in self._take(("finish",), name, args):
+            point.reached.set()
+
+
 def session_input(
     project_id: str,
     *,

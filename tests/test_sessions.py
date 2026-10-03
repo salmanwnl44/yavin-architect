@@ -38,6 +38,7 @@ from session_fixtures import (
     SESSION_ID,
     TASK_QUEUE,
     WORKER,
+    ActivityGate,
     ScriptedArchitect,
     background_worker,
     create_project,
@@ -386,22 +387,44 @@ def test_s7_pause_resume_and_reject(pool, tmp_path):
     create_project(pool, PROJECT)
     architect_ = ScriptedArchitect(S1_STORY)
     activities = make_activities(pool, make_gateway(pool, architect_), tmp_path / "objects")
+    gate = ActivityGate(activities)
+    first = gate.hold("session_start")
+    paused_recorded = gate.on_finish("record_status", status="paused")
+    awaiting = gate.on_finish("record_status", status="awaiting_approval")
 
     async def body() -> dict[str, Any]:
         async with await time_skipping() as env:
             async with build_worker(env.client, task_queue=TASK_QUEUE, activities=activities):
-                handle = await start(env.client, session_input(PROJECT), TASK_QUEUE)
-                await handle.signal("pause")
-                paused = await wait_for(handle, lambda v: v["status"] == "paused")
-                await asyncio.sleep(1.5)
-                still = await handle.query("status")
-                assert (still["status"], still["phase"]) == ("paused", paused["phase"])
-                assert session_row(pool, PROJECT, SESSION_ID)["status"] == "paused"
-                await handle.signal("resume")
-                view = await wait_for(handle, lambda v: v["status"] == "awaiting_approval")
-                assert view["phase"] == "package"
-                await handle.signal("reject")
-                return await result_of(handle)
+                try:
+                    handle = await start(env.client, session_input(PROJECT), TASK_QUEUE)
+                    # Held inside its very first activity, the session has passed no step
+                    # boundary yet: the pause is in its history before the first one.
+                    await first.wait()
+                    await handle.signal("pause")
+                    first.release()
+                    await paused_recorded.wait()
+                    paused = await handle.query("status")
+                    assert (paused["status"], paused["phase"]) == ("paused", "frame")
+                    assert paused["active"] is False
+                    assert session_row(pool, PROJECT, SESSION_ID)["status"] == "paused"
+                    # Pause stops progress. Another signal makes the workflow run again; the
+                    # query after it sees the state it settled in: still paused, same phase,
+                    # no step started.
+                    before = gate.names()
+                    await handle.signal("pause")
+                    still = await handle.query("status")
+                    assert (still["status"], still["phase"]) == ("paused", paused["phase"])
+                    assert still["active"] is False
+                    assert gate.names() == before and "frame" not in before
+                    await handle.signal("resume")
+                    await awaiting.wait()
+                    view = await handle.query("status")
+                    assert view["status"] == "awaiting_approval" and view["phase"] == "package"
+                    assert "frame" in gate.names(), "resume continued"
+                    await handle.signal("reject")
+                    return await result_of(handle)
+                finally:
+                    gate.release_all()
 
     final = run(body())
     assert final["status"] == "rejected" and final["outcome"] == "completed"
@@ -412,29 +435,49 @@ def test_s7_steer_enters_the_next_context_and_cancel_packages(pool, tmp_path):
     create_project(pool, PROJECT)
     architect_ = ScriptedArchitect(S1_STORY)
     activities = make_activities(pool, make_gateway(pool, architect_), tmp_path / "objects")
-    seen: list[str] = []
-    activities.before_activity = lambda name, args: seen.append(name)
+    gate = ActivityGate(activities)
+    first = gate.hold("session_start")
+    paused_before_frame = gate.on_finish("record_status", status="paused")
+    attack = gate.hold("attack", phase="attack")
+    paused_before_repair = gate.on_finish("record_status", status="paused")
 
     async def body() -> dict[str, Any]:
         async with await time_skipping() as env:
             async with build_worker(env.client, task_queue=TASK_QUEUE, activities=activities):
-                handle = await start(env.client, session_input(PROJECT), TASK_QUEUE)
-                await handle.signal("pause")
-                await wait_for(handle, lambda v: v["status"] == "paused")
-                await handle.signal(
-                    "steer", "Prefer at-least-once delivery with idempotent writes."
-                )
-                await handle.signal("resume")
-                # progress stops again at the next gate once the draft exists; cancel there
-                await wait_for(handle, lambda v: v["steer_claims"] and v["phase"] == "draft")
-                await handle.signal("pause")
-                await wait_for(handle, lambda v: v["status"] == "paused")
-                await handle.signal("cancel")
-                return await result_of(handle)
+                try:
+                    handle = await start(env.client, session_input(PROJECT), TASK_QUEUE)
+                    # Held in its first activity: pause and steer are both in the history
+                    # before the first step boundary, where the steer is recorded and the
+                    # session then pauses.
+                    await first.wait()
+                    await handle.signal("pause")
+                    await handle.signal(
+                        "steer", "Prefer at-least-once delivery with idempotent writes."
+                    )
+                    first.release()
+                    await paused_before_frame.wait()
+                    paused = await handle.query("status")
+                    assert (paused["status"], paused["phase"]) == ("paused", "frame")
+                    assert len(paused["steer_claims"]) == 1 and paused["pending_steers"] == 0
+                    await handle.signal("resume")
+                    # Held inside the attack on the draft: the draft exists, the repair has
+                    # not been asked for. Pause, then cancel at the boundary before repair.
+                    await attack.wait()
+                    assert architect_.served == {("frame", 0): 1, ("draft", 1): 1}
+                    await handle.signal("pause")
+                    attack.release()
+                    await paused_before_repair.wait()
+                    again = await handle.query("status")
+                    assert (again["status"], again["phase"]) == ("paused", "repair")
+                    await handle.signal("cancel")
+                    return await result_of(handle)
+                finally:
+                    gate.release_all()
 
     final = run(body())
     assert final["status"] == "cancelled" and final["outcome"] == "cancelled"
     assert final["package_key"] and final["stop_reason"] == "cancel"
+    assert ("repair", 1) not in architect_.served, "cancel took effect at the next boundary"
     (steer_claim,) = final["steer_claims"]
     committed = {p["claim_id"]: p["claim"] for t, p in payloads(pool) if t == "claim.committed"}
     assert committed[steer_claim]["subject"] == {"entity_type": "owner_guidance", "id": "steer-1"}
@@ -459,6 +502,57 @@ def gateway_calls(pool) -> list[dict[str, Any]]:
         return conn.execute(
             "SELECT purpose, status, request FROM gw_calls ORDER BY ts, call_id"
         ).fetchall()
+
+
+def test_s7_a_steer_after_the_last_step_boundary_is_still_recorded(pool, tmp_path):
+    """Pins the race deterministically: the steer arrives while the LAST step of the loop is
+    running, so no step boundary follows it; a second one arrives while the session waits
+    for the owner. Neither may be lost."""
+    create_project(pool, PROJECT)
+    architect_ = ScriptedArchitect(S1_STORY)
+    activities = make_activities(pool, make_gateway(pool, architect_), tmp_path / "objects")
+    gate = ActivityGate(activities)
+    verify = gate.hold("attack", phase="verify")
+    awaiting = gate.on_finish("record_status", status="awaiting_approval")
+    second = gate.on_finish("steer", n=2)
+
+    async def body() -> tuple[dict[str, Any], dict[str, Any]]:
+        async with await time_skipping() as env:
+            async with build_worker(env.client, task_queue=TASK_QUEUE, activities=activities):
+                try:
+                    handle = await start(env.client, session_input(PROJECT), TASK_QUEUE)
+                    await verify.wait()  # held inside the last step: no gate comes after it
+                    await handle.signal("steer", "Keep the queue's retention at seven days.")
+                    verify.release()
+                    await awaiting.wait()
+                    waiting = await handle.query("status")
+                    await handle.signal("steer", "Name an owner for the datastore runbook.")
+                    await second.wait()
+                    await handle.signal("approve")
+                    return waiting, await result_of(handle)
+                finally:
+                    gate.release_all()
+
+    waiting, final = run(body())
+    assert waiting["status"] == "awaiting_approval"
+    assert len(waiting["steer_claims"]) == 1, "the steer sent during the last step was lost"
+    assert waiting["pending_steers"] == 0
+    assert final["status"] == "approved" and len(final["steer_claims"]) == 2
+    events = events_of(pool, PROJECT)
+    committed = {e["payload"]["claim_id"]: e for e in events if e["type"] == "claim.committed"}
+    first, later = (committed[claim_id] for claim_id in final["steer_claims"])
+    assert first["payload"]["claim"]["object"]["literal"].startswith("Keep the queue")
+    assert later["payload"]["claim"]["object"]["literal"].startswith("Name an owner")
+    converge = next(
+        e["seq"]
+        for e in events
+        if e["type"] == "session.phase_changed" and e["payload"]["to"] == "converge"
+    )
+    assert first["seq"] < converge, "recorded at the loop's exit, before converge"
+    assert later["seq"] > converge
+    package = load_package(activities._store, final["package_key"])
+    assert package["steer_claims"] == [final["steer_claims"][0]]
+    assert len(events_of(pool, PROJECT, "source.ingested")) == 3, "the brief and two steers"
 
 
 # --- S8: replay -------------------------------------------------------------------------------

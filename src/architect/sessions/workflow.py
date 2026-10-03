@@ -143,6 +143,8 @@ class DesignSessionWorkflow:
             "stop_reason": self.stop_reason,
             "package_key": self.package_key,
             "steer_claims": list(self.steer_claims),
+            "pending_steers": len(self.steers),
+            "active": self.active,
         }
 
     def risk_ids(self) -> list[str]:
@@ -282,6 +284,9 @@ class DesignSessionWorkflow:
         except _Stop as stop:
             self.stop_reason, self.stop_detail = stop.reason, stop.detail
         self.active = False
+        # A steer that arrived after the loop's last step boundary has no gate left to be
+        # consumed at: record it here, so the owner's guidance is never lost.
+        await self._drain_steers()
 
         await self._phase("converge")
         self.best_version = self._best()
@@ -301,6 +306,7 @@ class DesignSessionWorkflow:
                 "waiver_requests": self.waiver_requests,
                 "adrs": self.adrs,
                 "rounds": self.rounds,
+                "steer_claims": list(self.steer_claims),
             },
         )
         self.package_key = package["package_key"]
@@ -314,7 +320,7 @@ class DesignSessionWorkflow:
             self.decision = None
             self.status = "awaiting_approval"
             await self._record()
-            await workflow.wait_condition(lambda: self.decision is not None or self.cancelled)
+            await self._await_decision()
             if self.cancelled:
                 self.status = self.outcome = "cancelled"
             else:
@@ -406,15 +412,35 @@ class DesignSessionWorkflow:
             return self.head
         return min(scored, key=lambda v: (self.scores[v][0], -self.versions.index(v)))
 
+    async def _drain_steers(self) -> None:
+        """Record every buffered steer, in arrival order, each exactly once. Signals only
+        append to `self.steers`; this is the one place they are consumed, and it is called
+        at every well-defined point: each step boundary, the loop's exit, and while the
+        session waits for a human."""
+        while self.steers:
+            text = self.steers.pop(0)
+            self.steer_count += 1
+            steered = await self._act("steer", {"n": self.steer_count, "text": text})
+            self.steer_claims.append(steered["claim_id"])
+
+    async def _await_decision(self) -> None:
+        """Wait at a human gate for a decision or a cancel; steers that arrive meanwhile are
+        recorded, not left in the buffer."""
+        while True:
+            await workflow.wait_condition(
+                lambda: self.decision is not None or self.cancelled or bool(self.steers)
+            )
+            if self.steers:
+                await self._drain_steers()
+                continue
+            return
+
     async def _gate(self) -> None:
         while True:
             if self.cancelled:
                 raise _Stop("cancel", "cancel signal")
             if self.steers:
-                text = self.steers.pop(0)
-                self.steer_count += 1
-                steered = await self._act("steer", {"n": self.steer_count, "text": text})
-                self.steer_claims.append(steered["claim_id"])
+                await self._drain_steers()
                 continue
             if self.paused:
                 self.status = "paused"
@@ -438,7 +464,7 @@ class DesignSessionWorkflow:
         self.decision = None
         self.status = "awaiting_approval"
         await self._record()
-        await workflow.wait_condition(lambda: self.decision is not None or self.cancelled)
+        await self._await_decision()
         if self.cancelled:
             raise _Stop("cancel", "cancel signal")
         decision, self.decision = self.decision, None
