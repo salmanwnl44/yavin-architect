@@ -6,15 +6,15 @@ says what has landed and how to run it.
 
 ## Ground truth
 
-`phase0-contracts/` is **FROZEN at v1.0** (`phase0-contracts/CHANGELOG.md` lists what changed
-from the v0.1 draft). Never edit, reformat, lint-fix or add to anything in it.
+`phase0-contracts/` is **FROZEN at v1.1** (`phase0-contracts/CHANGELOG.md` lists what changed
+from the v0.1 draft and from v1.0). Never edit, reformat, lint-fix or add to anything in it.
 Read it before coding, in this order: `README.md`, the five `*.schema.json` files,
 `fixture/fixture_ledger.jsonl`, `fixture/replay.py`.
 
 `fixture/replay.py` is the reference semantics: the Arbiter must refuse every ledger
 `replay.py` refuses, and accept what it accepts except where the contracts README lists a
-rule as Arbiter-enforced (model version parents, proposal id uniqueness) or
-`contracts-PROPOSALS.md` records the Arbiter as stricter (P-8: the model fold).
+rule as Arbiter-enforced (model version parents and uniqueness, the model fold, proposal id
+uniqueness).
 
 If a contract blocks you, log the friction in `contracts-PROPOSALS.md` and work around it.
 Do not change the contracts.
@@ -87,6 +87,9 @@ Tests create a throwaway schema per test inside the database named by
   `projections.py`, and a test that a rebuild reproduces it.
 - Adding a check means: a `c0NN.py` module with `CHECK_ID`, `USES` and `check`, its entry in
   `checks/catalog.json` and in `REGISTRY`, and unit tests for its pass, fail and empty cases.
+- After a PR merges, delete its remote branch — don't ask.
+- The Windows local-database check is deferred to M6 (Docker Desktop). Do not raise it as
+  an open question before then.
 - Out of scope until their milestone: LLM calls, extraction, the checks engine, Temporal
   workflows, a graph database, vector search, UI, auth, multi-tenancy.
 
