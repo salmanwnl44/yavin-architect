@@ -1224,13 +1224,23 @@ quick session on a tiny brief with a small cap and prints the timeline, gate, ri
 | S12 | Workflow modules import no DB, gateway, Arbiter, httpx, time or random modules | green | `test_s12_workflow_modules_import_nothing_impure` |
 | | CLI and API; every pre-existing test green | green | `test_session_cli`, `test_session_endpoints`; the run below |
 
-CI output (final commit): see below.
+CI output (branch head `af2ae54`, run 37115718021 on `ubuntu-latest` with `postgres:16` and a
+Temporal dev server started by the Temporal CLI, `ARCHITECT_TEMPORAL_ADDRESS=localhost:7233`):
+
+```
+================= 295 passed, 4 deselected in 80.58s (0:01:20) =================
+```
+
+Nothing skipped; the four deselected tests are the live ones (L1, L2, L3, L4). The same suite
+on the Windows development machine against the portable PostgreSQL 16: `295 passed, 4
+deselected in 402.38s`.
 
 ## Windows
 
 The database-backed tests ran only on Linux in CI through M5. With M6 the development
 machine runs the whole suite against a portable PostgreSQL 16 (the EDB binaries zip, no
-Docker) and Temporal's downloaded test servers: green, same counts as CI.
+Docker) and Temporal's downloaded test servers: green, same counts as CI (295 passed, 4
+deselected).
 
 ## Open
 
