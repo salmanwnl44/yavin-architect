@@ -210,11 +210,13 @@ def test_s2_an_unrepairable_flaw_ends_with_risks_and_a_blocked_gate(pool, tmp_pa
                     handle, lambda v: v["status"] == "awaiting_approval" and v["phase"] == "package"
                 )
                 assert view["outcome"] == "completed_with_risks"
-                await handle.signal("approve")
+                # M7 gate semantics: approve is refused on a BLOCKED package (P1); here the
+                # owner rejects, so nothing is waived
+                await handle.signal("reject")
                 return await result_of(handle)
 
     final = run(body())
-    assert final["outcome"] == "completed_with_risks" and final["status"] == "approved"
+    assert final["outcome"] == "completed_with_risks" and final["status"] == "rejected"
     assert final["stop_reason"] == "no_improvement" and final["round"] == 3
     package = load_package(activities._store, final["package_key"])
     assert package["gate"]["verdict"] == "BLOCKED"
@@ -275,10 +277,10 @@ def test_s3_exceeding_the_retry_bound_is_an_open_risk_not_a_crash(pool, tmp_path
 
     async def body() -> dict[str, Any]:
         async with await time_skipping() as env:
-            return await run_to_end(env.client, activities, session_input(PROJECT))
+            return await run_to_end(env.client, activities, session_input(PROJECT), decide="reject")
 
     final = run(body())
-    assert final["status"] == "approved" and final["outcome"] == "completed_with_risks"
+    assert final["status"] == "rejected" and final["outcome"] == "completed_with_risks"
     assert architect_.served[("draft", 1)] == 4, "one attempt plus three retries"
     assert "architect-could-not-produce-valid-patch:draft:1" in final["open_risk_ids"]
     assert [t for t, _ in payloads(pool) if t == "model.patch_committed"] == []
@@ -305,11 +307,16 @@ def test_s4_a_tight_token_cap_stops_the_session_with_the_best_so_far(pool, tmp_p
             # frame and draft fit (1500 tokens each, 512 reserved per call), the repair's
             # reservation does not
             return await run_to_end(
-                env.client, activities, session_input(PROJECT, overrides={"tokens": 4000})
+                env.client,
+                activities,
+                session_input(PROJECT, overrides={"tokens": 4000}),
+                decide="reject",
             )
 
     final = run(body())
-    assert final["status"] == "stopped_budget" and final["outcome"] == "stopped_budget"
+    # M7 gate semantics: a budget stop ends at the human gate with its package (P1 covers
+    # extend and approve_with_risks); here the owner rejects
+    assert final["status"] == "rejected" and final["outcome"] == "stopped_budget"
     assert architect_.served == {("frame", 0): 1, ("draft", 1): 1}
     draft_version = [p["version_id"] for t, p in payloads(pool) if t == "model.patch_committed"][0]
     assert final["best_version"] == draft_version
@@ -366,13 +373,14 @@ def test_s5_the_wall_clock_stops_the_session_with_a_package(pool, tmp_path):
                 await wait_for(handle, lambda v: v["status"] == "paused")
                 await env.sleep(timedelta(minutes=361))
                 await handle.signal("resume")
-                await wait_for(
-                    handle, lambda v: v["status"] != "paused" and v["status"] != "running"
-                )
+                view = await wait_for(handle, lambda v: v["status"] == "awaiting_approval")
+                assert view["outcome"] == "stopped_time" and view["package_key"]
+                await handle.signal("reject")
                 return await result_of(handle)
 
     final = run(body())
-    assert final["status"] == "stopped_time" and final["outcome"] == "stopped_time"
+    # M7 gate semantics: a wall-clock stop ends at the human gate with its package
+    assert final["status"] == "rejected" and final["outcome"] == "stopped_time"
     assert "wall-clock-exhausted" in final["open_risk_ids"] and final["package_key"]
     package = load_package(activities._store, final["package_key"])
     assert package["stop_reason"] == "time"

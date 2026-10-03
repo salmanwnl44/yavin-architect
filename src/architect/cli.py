@@ -336,6 +336,7 @@ def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
         if not _project_known(pool, args.project):
             return 1
         try:
+            seed = json.loads(Path(args.seed).read_text(encoding="utf-8")) if args.seed else None
             session = service.build_input(
                 config,
                 project_id=args.project,
@@ -343,8 +344,9 @@ def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
                 preset=args.preset,
                 overrides=_parse_overrides(args.override),
                 sources=args.source,
+                seed=seed,
             )
-        except ValueError as error:
+        except (ValueError, OSError) as error:
             print(f"cannot start: {error}", file=sys.stderr)
             return 1
 
@@ -390,7 +392,13 @@ def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
                 spend = (step["detail"] or {}).get("spend", {})
                 print(f"  {step['ts']}  checkpoint {step['phase']} spend {json.dumps(spend)}")
         for round_ in detail["rounds"]:
+            diff = round_.pop("diff", None)
             print(f"round {round_['round']}: {json.dumps(round_, sort_keys=True)}")
+            if diff is not None:
+                print(f"  diff vs previous version ({diff['from']} -> {diff['to']}):")
+                print(f"    {diff['summary']}")
+                for line in diff["lines"]:
+                    print(f"    {line}")
         gate = detail["gate"]
         print(f"gate: {gate['verdict'] if gate else 'not computed'}")
         for reason in (gate or {}).get("reasons", []):
@@ -400,10 +408,48 @@ def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
             print(f"  {risk['id'] if isinstance(risk, dict) else risk}")
         print(f"package: {detail['package_key'] or 'none yet'}")
         return 0
+    if command == "watch":
+        return _watch(pool, args)
+
+    name = command.replace("-", "_")
+    reason = getattr(args, "reason", None)
+    extension = (
+        {
+            "tokens": args.tokens,
+            "usd": args.usd,
+            "wall_clock_minutes": args.wall_clock_minutes,
+            "rounds": args.rounds,
+        }
+        if name == "extend"
+        else None
+    )
+    signer = None
+    if name in service.DECISIONS:
+        import getpass
+        import os
+
+        signer = args.signer or os.environ.get("ARCHITECT_USER") or getpass.getuser()
+        row = service.find_session(pool, args.session)
+        problem = (
+            service.decision_problem(row, name, reason=reason, extension=extension)
+            if row is not None
+            else None
+        )
+        if problem is not None:
+            print(f"cannot {command}: {problem}", file=sys.stderr)
+            return 1
 
     async def send() -> None:
         client = await service.connect(args.address)
-        await service.signal(client, args.session, command, getattr(args, "text", None))
+        await service.signal(
+            client,
+            args.session,
+            name,
+            getattr(args, "text", None),
+            reason=reason,
+            signer=signer,
+            extension=extension,
+        )
 
     try:
         asyncio.run(send())
@@ -411,6 +457,89 @@ def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
         print(f"cannot {command}: {error}", file=sys.stderr)
         return 1
     print(f"{command} sent to {args.session}")
+    return 0
+
+
+def _watch(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect session watch: a live view of one session, redrawn from the read models."""
+    import time
+
+    from rich.console import Console
+    from rich.live import Live
+
+    from architect import console
+    from architect.sessions import service
+
+    project = args.project
+    if project is None:
+        row = service.find_session(pool, args.session)
+        project = row["project_id"] if row else None
+    if project is None:
+        print(f"session {args.session} is not known here", file=sys.stderr)
+        return 1
+    store = LocalObjectStore()
+
+    def frame() -> dict | None:
+        Projector(pool).catch_up(project)
+        return console.snapshot(pool, store, project, args.session)
+
+    current = frame()
+    if current is None:
+        print(f"session {args.session} is not in project {project!r}", file=sys.stderr)
+        return 1
+    out = Console()
+    if args.once:
+        out.print(console.render(current))
+        return 0
+    try:
+        with Live(console.render(current), console=out, refresh_per_second=4) as live:
+            while current["session"]["status"] not in console.FINAL_STATUSES:
+                time.sleep(args.interval)
+                current = frame() or current
+                live.update(console.render(current))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _model(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect model diff --project P V1 V2: what turns V1 into V2."""
+    from architect import modeldiff
+
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    versions = []
+    for version_id in (args.v1, args.v2):
+        version = readmodel.model_version(pool, args.project, version_id)
+        if version is None:
+            print(f"no model version {version_id} in project {args.project!r}", file=sys.stderr)
+            return 1
+        versions.append(version["model"])
+    diff = modeldiff.diff_models(*versions)
+    if args.json:
+        print(json.dumps(diff, indent=2, sort_keys=True))
+        return 0
+    print(f"{args.v1} -> {args.v2}: {modeldiff.summary(diff)}")
+    for line in modeldiff.format_diff(diff):
+        print(line)
+    return 0
+
+
+def _why(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect why --project P --element E [--version V]: the trace behind an element."""
+    from architect import console
+
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    trace = readmodel.why(pool, args.project, args.element, args.version)
+    if trace is None:
+        where = args.version or "the head model"
+        print(f"no element {args.element} in {where} of project {args.project!r}", file=sys.stderr)
+        return 1
+    for line in console.format_why(trace):
+        print(line)
     return 0
 
 
@@ -573,18 +702,71 @@ def _parser() -> argparse.ArgumentParser:
         default=[],
         help="max_rounds|wall_clock_minutes|tokens|usd=value",
     )
+    start.add_argument(
+        "--seed",
+        type=Path,
+        default=None,
+        help="a SystemModel JSON to review: committed after genesis, the draft is skipped",
+    )
     status = session_sub.add_parser("status", help="the live status query")
     status.add_argument("--session", required=True)
-    show = session_sub.add_parser("show", help="timeline, rounds, gate, open risks, package key")
+    show = session_sub.add_parser(
+        "show", help="timeline, rounds with diffs, gate, open risks, package key"
+    )
     show.add_argument("--project", required=True)
     show.add_argument("--session", required=True)
-    for name in ("pause", "resume", "cancel", "approve", "reject"):
+    watch = session_sub.add_parser("watch", help="a live-refreshing view of the session")
+    watch.add_argument("--session", required=True)
+    watch.add_argument("--project", default=None, help="default: looked up from the session")
+    watch.add_argument("--interval", type=float, default=2.0, help="seconds between redraws")
+    watch.add_argument("--once", action="store_true", help="print one frame and exit")
+    for name in ("pause", "resume", "cancel"):
         signal = session_sub.add_parser(name, help=f"send the {name} signal")
         signal.add_argument("--session", required=True)
+    who = "who decides (default: $ARCHITECT_USER, else the login name)"
+    approve = session_sub.add_parser("approve", help="approve a package whose gate is ALLOWED")
+    approve.add_argument("--session", required=True)
+    approve.add_argument("--signer", default=None, help=who)
+    with_risks = session_sub.add_parser(
+        "approve-with-risks",
+        help="approve any package: signs one waiver per blocking reason with your reason",
+    )
+    with_risks.add_argument("--session", required=True)
+    with_risks.add_argument("--reason", required=True)
+    with_risks.add_argument("--signer", default=None, help=who)
+    reject = session_sub.add_parser("reject", help="reject the package")
+    reject.add_argument("--session", required=True)
+    reject.add_argument("--signer", default=None, help=who)
+    extend = session_sub.add_parser(
+        "extend", help="raise the limits of a budget- or time-stopped session and resume it"
+    )
+    extend.add_argument("--session", required=True)
+    extend.add_argument("--tokens", type=int, default=None, help="tokens to add")
+    extend.add_argument("--usd", type=float, default=None, help="usd to add")
+    extend.add_argument("--wall-clock-minutes", type=int, default=None, help="minutes to add")
+    extend.add_argument("--rounds", type=int, default=None, help="rounds to add")
+    extend.add_argument("--signer", default=None, help=who)
     steer = session_sub.add_parser("steer", help="send guidance the next context will include")
     steer.add_argument("--session", required=True)
     steer.add_argument("--text", required=True)
     session.set_defaults(run=_session)
+
+    model = sub.add_parser("model", help="inspect model versions")
+    model_sub = model.add_subparsers(dest="model_command", required=True)
+    diff = model_sub.add_parser("diff", help="the structural diff between two model versions")
+    diff.add_argument("--project", required=True)
+    diff.add_argument("v1")
+    diff.add_argument("v2")
+    diff.add_argument("--json", action="store_true", help="the diff as JSON")
+    model.set_defaults(run=_model)
+
+    why = sub.add_parser(
+        "why", help="why an element is there: requirements, ADRs, evidence claims, sources"
+    )
+    why.add_argument("--project", required=True)
+    why.add_argument("--element", required=True)
+    why.add_argument("--version", default=None, help="default: the head model")
+    why.set_defaults(run=_why)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

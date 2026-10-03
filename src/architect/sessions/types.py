@@ -34,6 +34,7 @@ STATUSES = (
     "paused",
     "awaiting_approval",
     "approved",
+    "approved_with_risks",
     "rejected",
     "stopped_budget",
     "stopped_time",
@@ -59,6 +60,8 @@ class SessionInput:
     started_at: str
     limits: dict[str, Any] = field(default_factory=dict)
     sources: list[str] = field(default_factory=list)
+    # review mode: a SystemModel committed as the first patch after genesis; draft is skipped
+    seed: dict[str, Any] | None = None
 
 
 def spend_zero() -> dict[str, Any]:

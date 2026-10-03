@@ -52,7 +52,10 @@ def test_l4_a_real_quick_session(pool, tmp_path, capsys):
 
     async def body() -> dict[str, Any]:
         async with dev_server() as client:
-            return await run_to_end(client, activities, session, task_queue="architect-live")
+            # at the end gate: approve an ALLOWED package, reject any other (never a waiver)
+            return await run_to_end(
+                client, activities, session, task_queue="architect-live", decide="auto"
+            )
 
     final = asyncio.run(body())
     package = load_package(store, final["package_key"]) if final["package_key"] else {}
@@ -65,5 +68,12 @@ def test_l4_a_real_quick_session(pool, tmp_path, capsys):
         print(f"gate: {gate.get('verdict')} {[r.get('check_id') for r in gate.get('reasons', [])]}")
         print("open risks:", [r["id"] for r in package.get("open_risks", [])])
         print(f"usd: {final['spend']['usd']:.4f} tokens: {final['spend']['tokens']}")
-    assert final["status"] in ("approved", "stopped_budget", "stopped_time")
+    # every outcome now ends at the human gate with its package (M7); `auto` closed it
+    assert final["status"] in ("approved", "rejected")
+    assert final["outcome"] in (
+        "completed",
+        "completed_with_risks",
+        "stopped_budget",
+        "stopped_time",
+    )
     assert final["package_key"]

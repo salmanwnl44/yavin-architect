@@ -433,3 +433,15 @@ CREATE OR REPLACE TRIGGER ag_messages_no_update_delete
 CREATE OR REPLACE TRIGGER ag_messages_no_truncate
     BEFORE TRUNCATE ON ag_messages
     FOR EACH STATEMENT EXECUTE FUNCTION append_only();
+
+-- M7: what a human gate needs beside the status. failure: why a failed session failed;
+-- last_refusal: the last decision the workflow refused and why; gate_verdict: the package's;
+-- waivers: what approve_with_risks signed.
+ALTER TABLE ses_sessions ADD COLUMN IF NOT EXISTS failure text;
+ALTER TABLE ses_sessions ADD COLUMN IF NOT EXISTS last_refusal jsonb;
+ALTER TABLE ses_sessions ADD COLUMN IF NOT EXISTS gate_verdict text;
+ALTER TABLE ses_sessions ADD COLUMN IF NOT EXISTS waivers jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+-- M7: the order messages were recorded in. `ts` is the session clock's origin (the same for
+-- every message of a session, so a replay is identical), so it cannot order them.
+ALTER TABLE ag_messages ADD COLUMN IF NOT EXISTS n bigserial;

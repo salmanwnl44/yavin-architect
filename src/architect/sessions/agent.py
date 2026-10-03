@@ -365,7 +365,7 @@ def messages_of(
         query += " AND type = %s"
         params.append(type_)
     with pool.connection() as conn:
-        return conn.execute(query + " ORDER BY ts, msg_id", params).fetchall()
+        return conn.execute(query + " ORDER BY n", params).fetchall()
 
 
 def content_key(*parts: Any) -> str:

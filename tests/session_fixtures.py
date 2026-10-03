@@ -384,6 +384,25 @@ S3_GIVE_UP_STORY: Story = {
     ("repair", 3): [REPAIR_NOOP],
 }
 
+# P1: the round-1 repair is refused by the budget before it reaches the provider; after the
+# owner extends, the loop resumes in round 2 and that repair fixes both flaws.
+P1_EXTEND_STORY: Story = {
+    ("frame", 0): [FRAME],
+    ("draft", 1): [DRAFT_V1],
+    ("repair", 2): [REPAIR_FIX],
+}
+# P4: review mode. The seed replaces the draft, so the story has no draft at all: a draft
+# call would fail the scripted architect.
+P4_SEED_STORY: Story = {("frame", 0): [FRAME], ("repair", 1): [REPAIR_FIX]}
+
+
+def model_from_ops(ops: list[dict[str, Any]]) -> dict[str, Any]:
+    """A SystemModel document built by applying add ops to an empty model: a seed file."""
+    from architect.model_fold import apply_patch, empty_model
+
+    return apply_patch(empty_model("seed-project", "mv_SEEDFILE0001"), {"ops": ops})
+
+
 MARKER = re.compile(r"\[architect purpose=(\w+) round=(\d+)\]")
 
 
@@ -530,6 +549,7 @@ def session_input(
     session_id: str = SESSION_ID,
     brief: str = BRIEF,
     config: SessionConfig | None = None,
+    seed: dict[str, Any] | None = None,
 ) -> SessionInput:
     return build_input(
         config or test_session_config(),
@@ -537,6 +557,7 @@ def session_input(
         brief=brief,
         preset=preset,
         overrides=overrides,
+        seed=seed,
         session_id=session_id,
         started_at=STARTED_AT,
     )
@@ -564,11 +585,23 @@ async def wait_for(
         await asyncio.sleep(interval)
 
 
-FINAL = ("approved", "rejected", "stopped_budget", "stopped_time", "cancelled", "failed")
+FINAL = ("approved", "approved_with_risks", "rejected", "cancelled", "failed")
 
 
 def is_final_or_awaiting(view: dict[str, Any]) -> bool:
     return view["status"] in FINAL or view["status"] == "awaiting_approval"
+
+
+async def decide_at_gate(handle: WorkflowHandle, decide: str, view: dict[str, Any]) -> None:
+    """Send a decision to an open gate. `auto` approves an ALLOWED package and rejects any
+    other (it never signs a waiver). A decision the workflow refuses is an error here, not a
+    hang: the query after the signal sees the refusal."""
+    if decide == "auto":
+        decide = "approve" if view.get("gate_verdict") == "ALLOWED" else "reject"
+    await handle.signal(decide)
+    after = await handle.query("status")
+    if after["refusals"] > view["refusals"]:
+        raise AssertionError(f"{decide} was refused: {after['last_refusal']}")
 
 
 async def run_to_end(
@@ -579,13 +612,13 @@ async def run_to_end(
     decide: str | None = "approve",
     task_queue: str = TASK_QUEUE,
 ) -> dict[str, Any]:
-    """Run one session on a worker until it waits for the owner or ends, optionally decide,
-    and return the workflow's final view."""
+    """Run one session on a worker until it waits for the owner or ends, optionally decide
+    (`approve`, `reject` or `auto`), and return the workflow's final view."""
     async with build_worker(client, task_queue=task_queue, activities=activities):
         handle = await start(client, input, task_queue)
         view = await wait_for(handle, is_final_or_awaiting)
         if view["status"] == "awaiting_approval" and decide is not None:
-            await handle.signal(decide)
+            await decide_at_gate(handle, decide, view)
         return await result_of(handle)
 
 
