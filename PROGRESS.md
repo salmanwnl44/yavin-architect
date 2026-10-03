@@ -12,13 +12,14 @@
 | M3 checks engine | **done**: 13 L0/L1 checks, the runner, the gate, CLI and API; all ten exit tests green in CI |
 | C2 contracts v1.1 | **done**: P-7 to P-10 applied, additive only; contracts FROZEN v1.1; CI green |
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
+| M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
 the read side, M3 built the checks engine, and C2 moved the contracts to v1.1 (a minor
 version: optional fields and documented rules, every v1.0 document still valid). CI runs the
-whole suite on `postgres:16`: 253 passed, none skipped, the live provider tests deselected. See
-"Exit tests" for the output and the C1, M1.1, M2, M3, C2 and M4 sections below. M5 has not
-been started.
+whole suite on `postgres:16`: 277 passed, none skipped, the live tests deselected. See
+"Exit tests" for the output and the C1, M1.1, M2, M3, C2, M4 and M5 sections below. M6 has
+not been started.
 
 ## M0: scaffold
 
@@ -166,10 +167,10 @@ Exit test 1 ingests the fixture through the Arbiter into project `fix`, dumps it
 diff. `test_cli.py` runs the same two paths on a hand-written 24-event ledger covering all 19
 event types (`tests/builders.py::sample_ledger`).
 
-CI output, 2026-10-03, GitHub Actions run 37105851382 on commit `4a46b6f`
-(https://github.com/salmanwnl44/yavin-architect/actions/runs/37105851382): ubuntu-latest,
-Python 3.11.16, PostgreSQL 16.15 (`postgres:16`), contracts v1.1, M1.1, M2, M3, M4. Every
-step succeeded.
+CI output, 2026-10-03, GitHub Actions run 37110051059 on commit `fce6f25`
+(https://github.com/salmanwnl44/yavin-architect/actions/runs/37110051059): ubuntu-latest,
+Python 3.11.16, PostgreSQL 16.15 (`postgres:16`), contracts v1.1, M1.1 to M5. Every step
+succeeded.
 
 ```
 $ python3 phase0-contracts/validate.py
@@ -221,7 +222,7 @@ rootdir: /home/runner/work/yavin-architect/yavin-architect
 configfile: pyproject.toml
 testpaths: tests
 plugins: anyio-4.15.1
-collecting ... collected 255 items / 2 deselected / 253 selected
+collecting ... collected 280 items / 3 deselected / 277 selected
 
 tests/test_api.py::test_healthz PASSED                                   [  0%]
 tests/test_api.py::test_create_project PASSED                            [  0%]
@@ -230,244 +231,268 @@ tests/test_api.py::test_the_whole_sample_session_commits PASSED          [  1%]
 tests/test_api.py::test_events_page_in_seq_order PASSED                  [  1%]
 tests/test_api.py::test_page_parameters_are_validated PASSED             [  2%]
 tests/test_api.py::test_get_event_by_id PASSED                           [  2%]
-tests/test_api.py::test_head_summarizes_the_arbiter_state PASSED         [  3%]
+tests/test_api.py::test_head_summarizes_the_arbiter_state PASSED         [  2%]
 tests/test_api.py::test_head_counts_open_objections PASSED               [  3%]
 tests/test_api.py::test_unknown_project_is_404_everywhere PASSED         [  3%]
-tests/test_arbiter.py::test_every_event_type_has_a_rule PASSED           [  4%]
+tests/test_arbiter.py::test_every_event_type_has_a_rule PASSED           [  3%]
 tests/test_arbiter.py::test_first_commit_is_seq_zero_without_prev_hash PASSED [  4%]
-tests/test_arbiter.py::test_arbiter_mints_event_id_and_ts_when_absent PASSED [  5%]
+tests/test_arbiter.py::test_arbiter_mints_event_id_and_ts_when_absent PASSED [  4%]
 tests/test_arbiter.py::test_client_event_id_and_ts_are_kept_verbatim PASSED [  5%]
 tests/test_arbiter.py::test_seq_is_dense_and_each_event_hashes_its_predecessor PASSED [  5%]
-tests/test_arbiter.py::test_projects_are_sequenced_independently PASSED  [  6%]
+tests/test_arbiter.py::test_projects_are_sequenced_independently PASSED  [  5%]
 tests/test_arbiter.py::test_committed_events_read_back_identically PASSED [  6%]
-tests/test_arbiter.py::test_idempotent_resubmission_returns_the_original_event PASSED [  7%]
-tests/test_arbiter.py::test_a_retry_wins_over_rules_that_its_first_commit_changed PASSED [  7%]
+tests/test_arbiter.py::test_idempotent_resubmission_returns_the_original_event PASSED [  6%]
+tests/test_arbiter.py::test_a_retry_wins_over_rules_that_its_first_commit_changed PASSED [  6%]
 tests/test_arbiter.py::test_parallel_submissions_get_dense_seq_and_a_valid_chain PASSED [  7%]
-tests/test_arbiter.py::test_parallel_retries_of_one_candidate_commit_once PASSED [  8%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET payload = '{}'::jsonb] PASSED [  8%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET seq = seq + 100] PASSED [  9%]
-tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[DELETE FROM events] PASSED [  9%]
+tests/test_arbiter.py::test_parallel_retries_of_one_candidate_commit_once PASSED [  7%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET payload = '{}'::jsonb] PASSED [  7%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[UPDATE events SET seq = seq + 100] PASSED [  8%]
+tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[DELETE FROM events] PASSED [  8%]
 tests/test_arbiter.py::test_raw_sql_cannot_change_or_remove_a_committed_event[TRUNCATE events] PASSED [  9%]
-tests/test_arbiter.py::test_a_failure_before_commit_rolls_back_event_and_state PASSED [ 10%]
-tests/test_arbiter.py::test_the_hook_runs_after_both_writes PASSED       [ 10%]
-tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[seq] PASSED [ 11%]
-tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[prev_hash] PASSED [ 11%]
-tests/test_arbiter.py::test_unknown_project_is_refused PASSED            [ 11%]
-tests/test_arbiter.py::test_event_id_is_unique_across_projects PASSED    [ 12%]
-tests/test_arbiter.py::test_unstorable_json_is_a_typed_rejection PASSED  [ 12%]
-tests/test_architecture.py::test_only_the_arbiter_writes_events PASSED   [ 13%]
-tests/test_architecture.py::test_no_code_path_updates_or_deletes_events PASSED [ 13%]
-tests/test_architecture.py::test_checks_import_nothing_impure PASSED     [ 13%]
-tests/test_checks.py::test_the_bundled_catalog_validates_against_the_contract PASSED [ 14%]
-tests/test_checks.py::test_registry_and_catalog_name_the_same_checks PASSED [ 14%]
-tests/test_checks.py::test_a_proposed_check_loads_and_records_not_implemented PASSED [ 15%]
-tests/test_checks.py::test_an_invalid_catalog_is_refused PASSED          [ 15%]
-tests/test_checks.py::test_c001_requirement_coverage PASSED              [ 15%]
-tests/test_checks.py::test_c002_no_orphans PASSED                        [ 16%]
-tests/test_checks.py::test_c003_interface_binding PASSED                 [ 16%]
-tests/test_checks.py::test_c004_requirement_refs_match_links PASSED      [ 16%]
-tests/test_checks.py::test_c005_capacity_headroom PASSED                 [ 17%]
-tests/test_checks.py::test_c006_availability_composition PASSED          [ 17%]
-tests/test_checks.py::test_c007_stateful_durability PASSED               [ 18%]
-tests/test_checks.py::test_c008_trust_boundaries_and_sensitive_data PASSED [ 18%]
-tests/test_checks.py::test_c009_open_load_bearing_assumptions PASSED     [ 18%]
-tests/test_checks.py::test_c010_single_points_of_failure PASSED          [ 19%]
-tests/test_checks.py::test_c011_idempotent_async_interfaces PASSED       [ 19%]
-tests/test_checks.py::test_c012_backpressure PASSED                      [ 20%]
-tests/test_checks.py::test_c013_referential_integrity PASSED             [ 20%]
-tests/test_checks.py::test_waiver_target_ref_forms PASSED                [ 20%]
-tests/test_checks.py::test_units PASSED                                  [ 21%]
-tests/test_checks.py::test_graph_helpers PASSED                          [ 21%]
-tests/test_checks.py::test_outcomes_say_what_they_must PASSED            [ 22%]
-tests/test_checks.py::test_the_catalog_on_the_reference_model_gives_the_expected_table PASSED [ 22%]
-tests/test_checks.py::test_running_every_check_twice_on_the_same_inputs_is_identical PASSED [ 22%]
-tests/test_checks.py::test_inputs_hash_follows_what_a_check_reads PASSED [ 23%]
-tests/test_checks_runner.py::test_the_battery_on_v3_matches_the_answer_key PASSED [ 23%]
-tests/test_checks_runner.py::test_v2_fails_c008_like_the_ledger_recorded PASSED [ 24%]
-tests/test_checks_runner.py::test_time_travel_sees_the_assumption_still_open PASSED [ 24%]
-tests/test_checks_runner.py::test_the_genesis_covers_no_requirement PASSED [ 24%]
-tests/test_checks_runner.py::test_the_gate_counts_an_objection_open_as_of_the_seq PASSED [ 25%]
-tests/test_checks_runner.py::test_a_gate_without_recorded_results_is_blocked_as_not_evaluated PASSED [ 25%]
-tests/test_checks_runner.py::test_a_repair_patch_opens_the_gate PASSED   [ 26%]
-tests/test_checks_runner.py::test_results_are_recorded_once_per_inputs PASSED [ 26%]
-tests/test_checks_runner.py::test_a_dry_run_records_nothing PASSED       [ 26%]
-tests/test_checks_runner.py::test_an_unknown_version_is_refused PASSED   [ 27%]
-tests/test_checks_runner.py::test_a_waiver_signed_after_the_seq_does_not_count PASSED [ 27%]
-tests/test_checks_runner.py::test_check_and_gate_commands PASSED         [ 28%]
-tests/test_checks_runner.py::test_the_check_endpoints PASSED             [ 28%]
-tests/test_cli.py::test_ingest_then_dump_round_trips_the_ledger PASSED   [ 28%]
-tests/test_cli.py::test_ingest_is_idempotent PASSED                      [ 29%]
-tests/test_cli.py::test_a_dump_can_be_ingested_into_a_fresh_database_project PASSED [ 29%]
-tests/test_cli.py::test_ingest_stops_at_the_first_rejection_with_the_typed_error PASSED [ 30%]
-tests/test_cli.py::test_dump_to_stdout PASSED                            [ 30%]
-tests/test_cli.py::test_verify_reports_a_healthy_chain PASSED            [ 30%]
-tests/test_cli.py::test_verify_reports_a_tampered_event PASSED           [ 31%]
-tests/test_cli.py::test_rebuild_state_reports_zero_diff_on_a_healthy_ledger PASSED [ 31%]
-tests/test_cli.py::test_rebuild_state_repairs_and_reports_drift PASSED   [ 32%]
-tests/test_cli.py::test_dropping_the_state_tables_loses_nothing PASSED   [ 32%]
-tests/test_cli.py::test_rebuild_only_touches_its_own_project PASSED      [ 32%]
-tests/test_cli.py::test_commands_need_an_existing_project[dump] PASSED   [ 33%]
-tests/test_cli.py::test_commands_need_an_existing_project[verify] PASSED [ 33%]
-tests/test_cli.py::test_commands_need_an_existing_project[rebuild-state] PASSED [ 33%]
-tests/test_cli.py::test_console_entrypoint PASSED                        [ 34%]
-tests/test_contracts.py::test_all_five_schemas_meta_validate PASSED      [ 34%]
-tests/test_contracts.py::test_every_schema_id_is_a_v1_id PASSED          [ 35%]
-tests/test_contracts.py::test_the_contract_scripts_exit_zero[validate.py-RESULT: ALL GREEN] PASSED [ 35%]
-tests/test_contracts.py::test_the_contract_scripts_exit_zero[fixture/replay.py-RESULT: REPLAY GREEN] PASSED [ 35%]
-tests/test_contracts.py::test_event_types_match_the_payload_dispatch PASSED [ 36%]
-tests/test_contracts.py::test_event_error_reports_the_branch_for_the_events_own_type PASSED [ 36%]
-tests/test_contracts.py::test_formats_are_assertions PASSED              [ 37%]
-tests/test_contracts.py::test_embedded_validators_resolve_their_defs PASSED [ 37%]
-tests/test_contracts.py::test_json_path_formatting PASSED                [ 37%]
-tests/test_contracts_v11.py::test_the_fixture_ledger_is_byte_identical PASSED [ 38%]
-tests/test_contracts_v11.py::test_replay_prints_what_progress_recorded PASSED [ 38%]
-tests/test_contracts_v11.py::test_the_schemas_still_say_v1 PASSED        [ 39%]
-tests/test_contracts_v11.py::test_every_existing_instance_validates_under_v1_1 PASSED [ 39%]
-tests/test_contracts_v11.py::test_fields_and_the_name_convention_give_the_same_verdict[architect.checks.c005] PASSED [ 39%]
-tests/test_contracts_v11.py::test_fields_and_the_name_convention_give_the_same_verdict[architect.checks.c006] PASSED [ 40%]
-tests/test_contracts_v11.py::test_c005_and_c006_verdicts_on_the_bound_model PASSED [ 40%]
-tests/test_contracts_v11.py::test_c013_fails_a_capacity_param_whose_applies_to_dangles PASSED [ 41%]
-tests/test_contracts_v11.py::test_a_capacity_param_with_the_new_fields_validates PASSED [ 41%]
-tests/test_contracts_v11.py::test_replay_arbiter_and_projector_agree_on_a_branching_ledger PASSED [ 41%]
-tests/test_contracts_v11.py::test_new_check_results_name_their_version_and_seq PASSED [ 42%]
-tests/test_contracts_v11.py::test_a_v1_0_result_without_the_fields_is_keyed_by_the_head_of_its_time PASSED [ 42%]
-tests/test_contracts_v11.py::test_the_v1_1_fields_are_optional_and_typed PASSED [ 43%]
-tests/test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green PASSED [ 43%]
-tests/test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff PASSED [ 43%]
-tests/test_exit_fixture.py::test_the_arbiters_head_model_is_what_replay_folds_before_and_after_a_rebuild PASSED [ 44%]
-tests/test_gateway.py::test_tiers_resolve_to_their_configured_candidates PASSED [ 44%]
-tests/test_gateway.py::test_the_shipped_config_routes_every_tier_to_anthropic_first PASSED [ 45%]
-tests/test_gateway.py::test_only_providers_import_llm_clients_and_only_the_config_names_models PASSED [ 45%]
-tests/test_gateway.py::test_invalid_then_valid_structured_output_succeeds_on_the_second_attempt PASSED [ 45%]
-tests/test_gateway.py::test_persistently_invalid_structured_output_is_refused_after_three_attempts PASSED [ 46%]
-tests/test_gateway.py::test_parsed_is_only_ever_validated_data PASSED    [ 46%]
-tests/test_gateway.py::test_identical_deterministic_requests_hit_the_cache PASSED [ 47%]
-tests/test_gateway.py::test_auto_mode_does_not_cache_sampled_requests_but_force_does PASSED [ 47%]
-tests/test_gateway.py::test_a_call_over_the_session_token_cap_is_refused_before_the_provider PASSED [ 47%]
-tests/test_gateway.py::test_twenty_concurrent_calls_never_exceed_a_tight_cap PASSED [ 48%]
-tests/test_gateway.py::test_null_limits_are_uncapped_including_the_fixtures_budget PASSED [ 48%]
-tests/test_gateway.py::test_spend_is_tracked_under_every_sub_scope PASSED [ 49%]
-tests/test_gateway.py::test_every_attempt_failure_and_hit_has_a_row PASSED [ 49%]
-tests/test_gateway.py::test_the_call_log_is_append_only PASSED           [ 49%]
-tests/test_gateway.py::test_prompt_hash_is_deterministic_and_routing_independent PASSED [ 50%]
-tests/test_gateway.py::test_replay_serves_recorded_responses_and_never_calls_the_provider PASSED [ 50%]
-tests/test_gateway.py::test_replay_mode_comes_from_the_environment PASSED [ 50%]
-tests/test_gateway.py::test_two_rate_limits_then_success_takes_three_attempts_without_real_sleep PASSED [ 51%]
-tests/test_gateway.py::test_a_persistently_failing_primary_falls_back PASSED [ 51%]
-tests/test_gateway.py::test_a_non_retryable_error_falls_back_at_once PASSED [ 52%]
-tests/test_gateway.py::test_all_candidates_failing_names_each PASSED     [ 52%]
-tests/test_gateway.py::test_exclude_families_removes_candidates PASSED   [ 52%]
-tests/test_gateway.py::test_a_key_in_the_environment_never_reaches_rows_logs_or_errors PASSED [ 53%]
-tests/test_gateway.py::test_wrap_untrusted_is_delimited_and_carries_the_source PASSED [ 53%]
-tests/test_gateway.py::test_the_untrusted_rule_is_prepended_verbatim_only_when_tainted PASSED [ 54%]
-tests/test_gateway.py::test_gateway_cli PASSED                           [ 54%]
-tests/test_gateway_providers.py::test_openai_compat_request_shape_and_usage PASSED [ 54%]
-tests/test_gateway_providers.py::test_openai_compat_structured_output_uses_json_schema PASSED [ 55%]
-tests/test_gateway_providers.py::test_openai_compat_falls_back_to_json_mode_when_the_server_lacks_json_schema PASSED [ 55%]
-tests/test_gateway_providers.py::test_openai_compat_maps_statuses[429-True] PASSED [ 56%]
-tests/test_gateway_providers.py::test_openai_compat_maps_statuses[500-True] PASSED [ 56%]
-tests/test_gateway_providers.py::test_openai_compat_maps_statuses[503-True] PASSED [ 56%]
-tests/test_gateway_providers.py::test_openai_compat_maps_statuses[400-False] PASSED [ 57%]
-tests/test_gateway_providers.py::test_openai_compat_maps_statuses[404-False] PASSED [ 57%]
-tests/test_gateway_providers.py::test_openai_compat_timeouts_are_retryable PASSED [ 58%]
-tests/test_gateway_providers.py::test_openai_compat_needs_a_base_url PASSED [ 58%]
-tests/test_gateway_providers.py::test_redaction PASSED                   [ 58%]
-tests/test_gateway_providers.py::test_anthropic_passes_system_separately_and_parses_usage PASSED [ 59%]
-tests/test_gateway_providers.py::test_anthropic_structured_output_uses_the_native_json_schema_format PASSED [ 59%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[429-True] PASSED [ 60%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[529-True] PASSED [ 60%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[500-True] PASSED [ 60%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[400-False] PASSED [ 61%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[401-False] PASSED [ 61%]
-tests/test_gateway_providers.py::test_anthropic_maps_statuses[404-False] PASSED [ 62%]
-tests/test_gateway_providers.py::test_anthropic_refusals_are_not_retried PASSED [ 62%]
-tests/test_gateway_providers.py::test_anthropic_timeouts_are_retryable PASSED [ 62%]
-tests/test_model_fold.py::test_folding_the_fixture_gives_replays_final_model PASSED [ 63%]
-tests/test_model_fold.py::test_each_op_kind PASSED                       [ 63%]
-tests/test_model_fold.py::test_the_base_is_left_untouched_and_a_proposal_keeps_its_version PASSED [ 64%]
-tests/test_model_fold.py::test_a_missing_target_is_an_error[update_element] PASSED [ 64%]
-tests/test_model_fold.py::test_a_missing_target_is_an_error[remove_element] PASSED [ 64%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op0-element_type] PASSED [ 65%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op1-element] PASSED [ 65%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op2-element_id] PASSED [ 66%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op3-element_id] PASSED [ 66%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op4-link] PASSED [ 66%]
-tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op5-link_type] PASSED [ 67%]
-tests/test_model_fold.py::test_a_child_is_a_copy_of_its_parent_under_a_new_id PASSED [ 67%]
-tests/test_model_fold.py::test_a_genesis_is_empty PASSED                 [ 67%]
-tests/test_projections.py::test_every_event_type_is_projected_or_explicitly_not PASSED [ 68%]
-tests/test_projections.py::test_projections_never_write_events_or_reach_the_arbiter PASSED [ 68%]
-tests/test_projections.py::test_fixture_projection_equals_what_replay_folds PASSED [ 69%]
-tests/test_projections.py::test_every_fixture_version_is_materialized_and_valid PASSED [ 69%]
-tests/test_projections.py::test_model_edges_are_kept_per_version PASSED  [ 69%]
-tests/test_projections.py::test_projecting_event_by_event_equals_a_rebuild PASSED [ 70%]
-tests/test_projections.py::test_batch_size_does_not_change_the_result PASSED [ 70%]
-tests/test_projections.py::test_a_crash_mid_rebuild_resumes_to_the_same_hash PASSED [ 71%]
-tests/test_projections.py::test_killing_the_projector_process_mid_rebuild_loses_nothing PASSED [ 71%]
-tests/test_projections.py::test_dropping_every_proj_table_loses_nothing PASSED [ 71%]
-tests/test_projections.py::test_a_claim_reads_as_it_stood_at_an_earlier_seq PASSED [ 72%]
-tests/test_projections.py::test_claim_detail_has_history_and_provenance PASSED [ 72%]
-tests/test_projections.py::test_why_traces_an_element_to_requirements_decisions_claims_and_sources PASSED [ 73%]
-tests/test_projections.py::test_refuting_a_premise_compromises_everything_derived_from_it PASSED [ 73%]
-tests/test_projections.py::test_projection_status_reports_the_lag PASSED [ 73%]
-tests/test_projections.py::test_the_worker_wakes_on_the_arbiters_notification PASSED [ 74%]
-tests/test_projections.py::test_the_worker_polls_when_no_notification_arrives PASSED [ 74%]
-tests/test_projections.py::test_the_arbiter_notifies_with_the_project_id PASSED [ 75%]
-tests/test_projections.py::test_objections_decisions_waivers_checks_and_timeline PASSED [ 75%]
-tests/test_projections.py::test_a_version_created_from_a_parent_starts_as_the_parents_model PASSED [ 75%]
-tests/test_projections.py::test_an_event_that_cannot_be_folded_stops_the_projector_in_front_of_it PASSED [ 76%]
-tests/test_projections.py::test_projection_is_per_project PASSED         [ 76%]
-tests/test_projections.py::test_reads_of_things_that_are_not_projected_are_404 PASSED [ 77%]
-tests/test_refusals.py::test_documented_claim_without_evidence PASSED    [ 77%]
-tests/test_refusals.py::test_load_bearing_assumption_without_verification_plan PASSED [ 77%]
-tests/test_refusals.py::test_promotion_to_measured_needs_an_experiment_as_cause PASSED [ 78%]
-tests/test_refusals.py::test_status_change_with_the_wrong_from PASSED    [ 78%]
-tests/test_refusals.py::test_waiver_signed_by_an_agent PASSED            [ 79%]
-tests/test_refusals.py::test_evidence_citing_an_uningested_source PASSED [ 79%]
-tests/test_refusals.py::test_patch_on_a_stale_base PASSED                [ 79%]
-tests/test_refusals.py::test_resolving_an_objection_that_was_never_raised PASSED [ 80%]
-tests/test_refusals.py::test_objection_without_a_falsifiable_test PASSED [ 80%]
-tests/test_refusals.py::test_duplicate_source PASSED                     [ 81%]
-tests/test_refusals.py::test_proposed_claim_must_be_a_valid_claim PASSED [ 81%]
-tests/test_refusals.py::test_claim_id_mismatch PASSED                    [ 81%]
-tests/test_refusals.py::test_duplicate_claim_id PASSED                   [ 82%]
-tests/test_refusals.py::test_claim_from_an_unknown_proposal PASSED       [ 82%]
-tests/test_refusals.py::test_a_patch_proposal_is_not_a_claim_proposal PASSED [ 83%]
-tests/test_refusals.py::test_claim_and_patch_proposals_with_distinct_ids_are_accepted PASSED [ 83%]
-tests/test_refusals.py::test_a_proposal_id_is_used_once_across_both_kinds PASSED [ 83%]
-tests/test_refusals.py::test_formats_inside_embedded_objects_are_enforced PASSED [ 84%]
-tests/test_refusals.py::test_status_change_of_an_unknown_claim PASSED    [ 84%]
-tests/test_refusals.py::test_status_change_with_an_unknown_cause_event PASSED [ 84%]
-tests/test_refusals.py::test_a_cause_event_from_another_project_is_unknown PASSED [ 85%]
-tests/test_refusals.py::test_promotion_to_observed_is_guarded_too PASSED [ 85%]
-tests/test_refusals.py::test_retracting_an_unknown_claim PASSED          [ 86%]
-tests/test_refusals.py::test_second_genesis_version PASSED               [ 86%]
-tests/test_refusals.py::test_version_created_with_a_committed_parent_is_accepted PASSED [ 86%]
-tests/test_refusals.py::test_version_created_with_an_unknown_parent PASSED [ 87%]
-tests/test_refusals.py::test_a_parent_version_from_another_project_is_unknown PASSED [ 87%]
-tests/test_refusals.py::test_patch_must_be_a_valid_model_patch PASSED    [ 88%]
-tests/test_refusals.py::test_patch_base_mismatch PASSED                  [ 88%]
-tests/test_refusals.py::test_patch_proposed_on_a_stale_base PASSED       [ 88%]
-tests/test_refusals.py::test_patch_before_any_model_version PASSED       [ 89%]
-tests/test_refusals.py::test_patch_committed_from_an_unknown_proposal PASSED [ 89%]
+tests/test_arbiter.py::test_a_failure_before_commit_rolls_back_event_and_state PASSED [  9%]
+tests/test_arbiter.py::test_the_hook_runs_after_both_writes PASSED       [  9%]
+tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[seq] PASSED [ 10%]
+tests/test_arbiter.py::test_candidates_must_not_carry_arbiter_stamped_fields[prev_hash] PASSED [ 10%]
+tests/test_arbiter.py::test_unknown_project_is_refused PASSED            [ 10%]
+tests/test_arbiter.py::test_event_id_is_unique_across_projects PASSED    [ 11%]
+tests/test_arbiter.py::test_unstorable_json_is_a_typed_rejection PASSED  [ 11%]
+tests/test_architecture.py::test_only_the_arbiter_writes_events PASSED   [ 11%]
+tests/test_architecture.py::test_no_code_path_updates_or_deletes_events PASSED [ 12%]
+tests/test_architecture.py::test_checks_import_nothing_impure PASSED     [ 12%]
+tests/test_checks.py::test_the_bundled_catalog_validates_against_the_contract PASSED [ 12%]
+tests/test_checks.py::test_registry_and_catalog_name_the_same_checks PASSED [ 13%]
+tests/test_checks.py::test_a_proposed_check_loads_and_records_not_implemented PASSED [ 13%]
+tests/test_checks.py::test_an_invalid_catalog_is_refused PASSED          [ 14%]
+tests/test_checks.py::test_c001_requirement_coverage PASSED              [ 14%]
+tests/test_checks.py::test_c002_no_orphans PASSED                        [ 14%]
+tests/test_checks.py::test_c003_interface_binding PASSED                 [ 15%]
+tests/test_checks.py::test_c004_requirement_refs_match_links PASSED      [ 15%]
+tests/test_checks.py::test_c005_capacity_headroom PASSED                 [ 15%]
+tests/test_checks.py::test_c006_availability_composition PASSED          [ 16%]
+tests/test_checks.py::test_c007_stateful_durability PASSED               [ 16%]
+tests/test_checks.py::test_c008_trust_boundaries_and_sensitive_data PASSED [ 16%]
+tests/test_checks.py::test_c009_open_load_bearing_assumptions PASSED     [ 17%]
+tests/test_checks.py::test_c010_single_points_of_failure PASSED          [ 17%]
+tests/test_checks.py::test_c011_idempotent_async_interfaces PASSED       [ 18%]
+tests/test_checks.py::test_c012_backpressure PASSED                      [ 18%]
+tests/test_checks.py::test_c013_referential_integrity PASSED             [ 18%]
+tests/test_checks.py::test_waiver_target_ref_forms PASSED                [ 19%]
+tests/test_checks.py::test_units PASSED                                  [ 19%]
+tests/test_checks.py::test_graph_helpers PASSED                          [ 19%]
+tests/test_checks.py::test_outcomes_say_what_they_must PASSED            [ 20%]
+tests/test_checks.py::test_the_catalog_on_the_reference_model_gives_the_expected_table PASSED [ 20%]
+tests/test_checks.py::test_running_every_check_twice_on_the_same_inputs_is_identical PASSED [ 20%]
+tests/test_checks.py::test_inputs_hash_follows_what_a_check_reads PASSED [ 21%]
+tests/test_checks_runner.py::test_the_battery_on_v3_matches_the_answer_key PASSED [ 21%]
+tests/test_checks_runner.py::test_v2_fails_c008_like_the_ledger_recorded PASSED [ 22%]
+tests/test_checks_runner.py::test_time_travel_sees_the_assumption_still_open PASSED [ 22%]
+tests/test_checks_runner.py::test_the_genesis_covers_no_requirement PASSED [ 22%]
+tests/test_checks_runner.py::test_the_gate_counts_an_objection_open_as_of_the_seq PASSED [ 23%]
+tests/test_checks_runner.py::test_a_gate_without_recorded_results_is_blocked_as_not_evaluated PASSED [ 23%]
+tests/test_checks_runner.py::test_a_repair_patch_opens_the_gate PASSED   [ 23%]
+tests/test_checks_runner.py::test_results_are_recorded_once_per_inputs PASSED [ 24%]
+tests/test_checks_runner.py::test_a_dry_run_records_nothing PASSED       [ 24%]
+tests/test_checks_runner.py::test_an_unknown_version_is_refused PASSED   [ 24%]
+tests/test_checks_runner.py::test_a_waiver_signed_after_the_seq_does_not_count PASSED [ 25%]
+tests/test_checks_runner.py::test_check_and_gate_commands PASSED         [ 25%]
+tests/test_checks_runner.py::test_the_check_endpoints PASSED             [ 25%]
+tests/test_cli.py::test_ingest_then_dump_round_trips_the_ledger PASSED   [ 26%]
+tests/test_cli.py::test_ingest_is_idempotent PASSED                      [ 26%]
+tests/test_cli.py::test_a_dump_can_be_ingested_into_a_fresh_database_project PASSED [ 27%]
+tests/test_cli.py::test_ingest_stops_at_the_first_rejection_with_the_typed_error PASSED [ 27%]
+tests/test_cli.py::test_dump_to_stdout PASSED                            [ 27%]
+tests/test_cli.py::test_verify_reports_a_healthy_chain PASSED            [ 28%]
+tests/test_cli.py::test_verify_reports_a_tampered_event PASSED           [ 28%]
+tests/test_cli.py::test_rebuild_state_reports_zero_diff_on_a_healthy_ledger PASSED [ 28%]
+tests/test_cli.py::test_rebuild_state_repairs_and_reports_drift PASSED   [ 29%]
+tests/test_cli.py::test_dropping_the_state_tables_loses_nothing PASSED   [ 29%]
+tests/test_cli.py::test_rebuild_only_touches_its_own_project PASSED      [ 29%]
+tests/test_cli.py::test_commands_need_an_existing_project[dump] PASSED   [ 30%]
+tests/test_cli.py::test_commands_need_an_existing_project[verify] PASSED [ 30%]
+tests/test_cli.py::test_commands_need_an_existing_project[rebuild-state] PASSED [ 31%]
+tests/test_cli.py::test_console_entrypoint PASSED                        [ 31%]
+tests/test_contracts.py::test_all_five_schemas_meta_validate PASSED      [ 31%]
+tests/test_contracts.py::test_every_schema_id_is_a_v1_id PASSED          [ 32%]
+tests/test_contracts.py::test_the_contract_scripts_exit_zero[validate.py-RESULT: ALL GREEN] PASSED [ 32%]
+tests/test_contracts.py::test_the_contract_scripts_exit_zero[fixture/replay.py-RESULT: REPLAY GREEN] PASSED [ 32%]
+tests/test_contracts.py::test_event_types_match_the_payload_dispatch PASSED [ 33%]
+tests/test_contracts.py::test_event_error_reports_the_branch_for_the_events_own_type PASSED [ 33%]
+tests/test_contracts.py::test_formats_are_assertions PASSED              [ 33%]
+tests/test_contracts.py::test_embedded_validators_resolve_their_defs PASSED [ 34%]
+tests/test_contracts.py::test_json_path_formatting PASSED                [ 34%]
+tests/test_contracts_v11.py::test_the_fixture_ledger_is_byte_identical PASSED [ 35%]
+tests/test_contracts_v11.py::test_replay_prints_what_progress_recorded PASSED [ 35%]
+tests/test_contracts_v11.py::test_the_schemas_still_say_v1 PASSED        [ 35%]
+tests/test_contracts_v11.py::test_every_existing_instance_validates_under_v1_1 PASSED [ 36%]
+tests/test_contracts_v11.py::test_fields_and_the_name_convention_give_the_same_verdict[architect.checks.c005] PASSED [ 36%]
+tests/test_contracts_v11.py::test_fields_and_the_name_convention_give_the_same_verdict[architect.checks.c006] PASSED [ 36%]
+tests/test_contracts_v11.py::test_c005_and_c006_verdicts_on_the_bound_model PASSED [ 37%]
+tests/test_contracts_v11.py::test_c013_fails_a_capacity_param_whose_applies_to_dangles PASSED [ 37%]
+tests/test_contracts_v11.py::test_a_capacity_param_with_the_new_fields_validates PASSED [ 37%]
+tests/test_contracts_v11.py::test_replay_arbiter_and_projector_agree_on_a_branching_ledger PASSED [ 38%]
+tests/test_contracts_v11.py::test_new_check_results_name_their_version_and_seq PASSED [ 38%]
+tests/test_contracts_v11.py::test_a_v1_0_result_without_the_fields_is_keyed_by_the_head_of_its_time PASSED [ 38%]
+tests/test_contracts_v11.py::test_the_v1_1_fields_are_optional_and_typed PASSED [ 39%]
+tests/test_exit_fixture.py::test_fixture_round_trips_through_the_arbiter_and_replays_green PASSED [ 39%]
+tests/test_exit_fixture.py::test_rebuild_state_after_the_fixture_ingest_reports_zero_diff PASSED [ 40%]
+tests/test_exit_fixture.py::test_the_arbiters_head_model_is_what_replay_folds_before_and_after_a_rebuild PASSED [ 40%]
+tests/test_gateway.py::test_tiers_resolve_to_their_configured_candidates PASSED [ 40%]
+tests/test_gateway.py::test_the_shipped_config_routes_every_tier_to_anthropic_first PASSED [ 41%]
+tests/test_gateway.py::test_only_providers_import_llm_clients_and_only_the_config_names_models PASSED [ 41%]
+tests/test_gateway.py::test_invalid_then_valid_structured_output_succeeds_on_the_second_attempt PASSED [ 41%]
+tests/test_gateway.py::test_persistently_invalid_structured_output_is_refused_after_three_attempts PASSED [ 42%]
+tests/test_gateway.py::test_parsed_is_only_ever_validated_data PASSED    [ 42%]
+tests/test_gateway.py::test_identical_deterministic_requests_hit_the_cache PASSED [ 42%]
+tests/test_gateway.py::test_auto_mode_does_not_cache_sampled_requests_but_force_does PASSED [ 43%]
+tests/test_gateway.py::test_a_call_over_the_session_token_cap_is_refused_before_the_provider PASSED [ 43%]
+tests/test_gateway.py::test_twenty_concurrent_calls_never_exceed_a_tight_cap PASSED [ 44%]
+tests/test_gateway.py::test_null_limits_are_uncapped_including_the_fixtures_budget PASSED [ 44%]
+tests/test_gateway.py::test_spend_is_tracked_under_every_sub_scope PASSED [ 44%]
+tests/test_gateway.py::test_every_attempt_failure_and_hit_has_a_row PASSED [ 45%]
+tests/test_gateway.py::test_the_call_log_is_append_only PASSED           [ 45%]
+tests/test_gateway.py::test_prompt_hash_is_deterministic_and_routing_independent PASSED [ 45%]
+tests/test_gateway.py::test_replay_serves_recorded_responses_and_never_calls_the_provider PASSED [ 46%]
+tests/test_gateway.py::test_replay_mode_comes_from_the_environment PASSED [ 46%]
+tests/test_gateway.py::test_two_rate_limits_then_success_takes_three_attempts_without_real_sleep PASSED [ 46%]
+tests/test_gateway.py::test_a_persistently_failing_primary_falls_back PASSED [ 47%]
+tests/test_gateway.py::test_a_non_retryable_error_falls_back_at_once PASSED [ 47%]
+tests/test_gateway.py::test_all_candidates_failing_names_each PASSED     [ 48%]
+tests/test_gateway.py::test_exclude_families_removes_candidates PASSED   [ 48%]
+tests/test_gateway.py::test_a_key_in_the_environment_never_reaches_rows_logs_or_errors PASSED [ 48%]
+tests/test_gateway.py::test_wrap_untrusted_is_delimited_and_carries_the_source PASSED [ 49%]
+tests/test_gateway.py::test_the_untrusted_rule_is_prepended_verbatim_only_when_tainted PASSED [ 49%]
+tests/test_gateway.py::test_gateway_cli PASSED                           [ 49%]
+tests/test_gateway_providers.py::test_openai_compat_request_shape_and_usage PASSED [ 50%]
+tests/test_gateway_providers.py::test_openai_compat_structured_output_uses_json_schema PASSED [ 50%]
+tests/test_gateway_providers.py::test_openai_compat_falls_back_to_json_mode_when_the_server_lacks_json_schema PASSED [ 50%]
+tests/test_gateway_providers.py::test_openai_compat_maps_statuses[429-True] PASSED [ 51%]
+tests/test_gateway_providers.py::test_openai_compat_maps_statuses[500-True] PASSED [ 51%]
+tests/test_gateway_providers.py::test_openai_compat_maps_statuses[503-True] PASSED [ 51%]
+tests/test_gateway_providers.py::test_openai_compat_maps_statuses[400-False] PASSED [ 52%]
+tests/test_gateway_providers.py::test_openai_compat_maps_statuses[404-False] PASSED [ 52%]
+tests/test_gateway_providers.py::test_openai_compat_timeouts_are_retryable PASSED [ 53%]
+tests/test_gateway_providers.py::test_openai_compat_needs_a_base_url PASSED [ 53%]
+tests/test_gateway_providers.py::test_redaction PASSED                   [ 53%]
+tests/test_gateway_providers.py::test_anthropic_passes_system_separately_and_parses_usage PASSED [ 54%]
+tests/test_gateway_providers.py::test_anthropic_structured_output_uses_the_native_json_schema_format PASSED [ 54%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[429-True] PASSED [ 54%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[529-True] PASSED [ 55%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[500-True] PASSED [ 55%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[400-False] PASSED [ 55%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[401-False] PASSED [ 56%]
+tests/test_gateway_providers.py::test_anthropic_maps_statuses[404-False] PASSED [ 56%]
+tests/test_gateway_providers.py::test_anthropic_refusals_are_not_retried PASSED [ 57%]
+tests/test_gateway_providers.py::test_anthropic_timeouts_are_retryable PASSED [ 57%]
+tests/test_ingestion.py::test_the_same_file_twice_is_one_source PASSED   [ 57%]
+tests/test_ingestion.py::test_a_git_repository_is_one_external_source_with_skips PASSED [ 58%]
+tests/test_ingestion.py::test_trusted_domains_are_the_only_external_trusted PASSED [ 58%]
+tests/test_ingestion.py::test_pdf_segments_have_exact_locators PASSED    [ 58%]
+tests/test_ingestion.py::test_repo_segments_have_exact_locators PASSED   [ 59%]
+tests/test_ingestion.py::test_agreeing_passes_commit_a_documented_claim PASSED [ 59%]
+tests/test_ingestion.py::test_each_disagreement_quarantines[missing-pass_b_missing] PASSED [ 59%]
+tests/test_ingestion.py::test_each_disagreement_quarantines[spo-spo_mismatch] PASSED [ 60%]
+tests/test_ingestion.py::test_each_disagreement_quarantines[magnitude-magnitude_mismatch] PASSED [ 60%]
+tests/test_ingestion.py::test_each_disagreement_quarantines[condition-condition_conflict] PASSED [ 61%]
+tests/test_ingestion.py::test_a_non_verbatim_quote_never_becomes_an_event PASSED [ 61%]
+tests/test_ingestion.py::test_rerunning_extract_writes_nothing_and_a_new_version_re_extracts PASSED [ 61%]
+tests/test_ingestion.py::test_the_same_claim_from_two_sources_is_design_grade PASSED [ 62%]
+tests/test_ingestion.py::test_h1_status_and_confidence_in_the_output_are_rejected_by_the_schema PASSED [ 62%]
+tests/test_ingestion.py::test_h2_a_fabricated_benchmark_without_a_verbatim_quote_is_dropped PASSED [ 62%]
+tests/test_ingestion.py::test_h3_there_is_no_tool_path_and_the_environment_never_leaks PASSED [ 63%]
+tests/test_ingestion.py::test_h4_hidden_pdf_text_yields_at_most_a_documented_claim_about_it PASSED [ 63%]
+tests/test_ingestion.py::test_h5_the_taint_cannot_be_talked_up PASSED    [ 63%]
+tests/test_ingestion.py::test_the_extraction_package_has_no_tool_or_exec_path PASSED [ 64%]
+tests/test_ingestion.py::test_confidence_is_declared_monotonic_and_never_emitted PASSED [ 64%]
+tests/test_ingestion.py::test_a_crash_mid_pass_b_resumes_without_duplicates PASSED [ 64%]
+tests/test_ingestion.py::test_an_extraction_run_replays_to_identical_claims PASSED [ 65%]
+tests/test_ingestion.py::test_ingest_source_and_extract_commands PASSED  [ 65%]
+tests/test_ingestion.py::test_source_endpoints PASSED                    [ 66%]
+tests/test_model_fold.py::test_folding_the_fixture_gives_replays_final_model PASSED [ 66%]
+tests/test_model_fold.py::test_each_op_kind PASSED                       [ 66%]
+tests/test_model_fold.py::test_the_base_is_left_untouched_and_a_proposal_keeps_its_version PASSED [ 67%]
+tests/test_model_fold.py::test_a_missing_target_is_an_error[update_element] PASSED [ 67%]
+tests/test_model_fold.py::test_a_missing_target_is_an_error[remove_element] PASSED [ 67%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op0-element_type] PASSED [ 68%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op1-element] PASSED [ 68%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op2-element_id] PASSED [ 68%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op3-element_id] PASSED [ 69%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op4-link] PASSED [ 69%]
+tests/test_model_fold.py::test_an_op_without_the_fields_its_kind_needs_is_malformed[op5-link_type] PASSED [ 70%]
+tests/test_model_fold.py::test_a_child_is_a_copy_of_its_parent_under_a_new_id PASSED [ 70%]
+tests/test_model_fold.py::test_a_genesis_is_empty PASSED                 [ 70%]
+tests/test_projections.py::test_every_event_type_is_projected_or_explicitly_not PASSED [ 71%]
+tests/test_projections.py::test_projections_never_write_events_or_reach_the_arbiter PASSED [ 71%]
+tests/test_projections.py::test_fixture_projection_equals_what_replay_folds PASSED [ 71%]
+tests/test_projections.py::test_every_fixture_version_is_materialized_and_valid PASSED [ 72%]
+tests/test_projections.py::test_model_edges_are_kept_per_version PASSED  [ 72%]
+tests/test_projections.py::test_projecting_event_by_event_equals_a_rebuild PASSED [ 72%]
+tests/test_projections.py::test_batch_size_does_not_change_the_result PASSED [ 73%]
+tests/test_projections.py::test_a_crash_mid_rebuild_resumes_to_the_same_hash PASSED [ 73%]
+tests/test_projections.py::test_killing_the_projector_process_mid_rebuild_loses_nothing PASSED [ 74%]
+tests/test_projections.py::test_dropping_every_proj_table_loses_nothing PASSED [ 74%]
+tests/test_projections.py::test_a_claim_reads_as_it_stood_at_an_earlier_seq PASSED [ 74%]
+tests/test_projections.py::test_claim_detail_has_history_and_provenance PASSED [ 75%]
+tests/test_projections.py::test_why_traces_an_element_to_requirements_decisions_claims_and_sources PASSED [ 75%]
+tests/test_projections.py::test_refuting_a_premise_compromises_everything_derived_from_it PASSED [ 75%]
+tests/test_projections.py::test_projection_status_reports_the_lag PASSED [ 76%]
+tests/test_projections.py::test_the_worker_wakes_on_the_arbiters_notification PASSED [ 76%]
+tests/test_projections.py::test_the_worker_polls_when_no_notification_arrives PASSED [ 76%]
+tests/test_projections.py::test_the_arbiter_notifies_with_the_project_id PASSED [ 77%]
+tests/test_projections.py::test_objections_decisions_waivers_checks_and_timeline PASSED [ 77%]
+tests/test_projections.py::test_a_version_created_from_a_parent_starts_as_the_parents_model PASSED [ 77%]
+tests/test_projections.py::test_an_event_that_cannot_be_folded_stops_the_projector_in_front_of_it PASSED [ 78%]
+tests/test_projections.py::test_projection_is_per_project PASSED         [ 78%]
+tests/test_projections.py::test_reads_of_things_that_are_not_projected_are_404 PASSED [ 79%]
+tests/test_refusals.py::test_documented_claim_without_evidence PASSED    [ 79%]
+tests/test_refusals.py::test_load_bearing_assumption_without_verification_plan PASSED [ 79%]
+tests/test_refusals.py::test_promotion_to_measured_needs_an_experiment_as_cause PASSED [ 80%]
+tests/test_refusals.py::test_status_change_with_the_wrong_from PASSED    [ 80%]
+tests/test_refusals.py::test_waiver_signed_by_an_agent PASSED            [ 80%]
+tests/test_refusals.py::test_evidence_citing_an_uningested_source PASSED [ 81%]
+tests/test_refusals.py::test_patch_on_a_stale_base PASSED                [ 81%]
+tests/test_refusals.py::test_resolving_an_objection_that_was_never_raised PASSED [ 81%]
+tests/test_refusals.py::test_objection_without_a_falsifiable_test PASSED [ 82%]
+tests/test_refusals.py::test_duplicate_source PASSED                     [ 82%]
+tests/test_refusals.py::test_proposed_claim_must_be_a_valid_claim PASSED [ 83%]
+tests/test_refusals.py::test_claim_id_mismatch PASSED                    [ 83%]
+tests/test_refusals.py::test_duplicate_claim_id PASSED                   [ 83%]
+tests/test_refusals.py::test_claim_from_an_unknown_proposal PASSED       [ 84%]
+tests/test_refusals.py::test_a_patch_proposal_is_not_a_claim_proposal PASSED [ 84%]
+tests/test_refusals.py::test_claim_and_patch_proposals_with_distinct_ids_are_accepted PASSED [ 84%]
+tests/test_refusals.py::test_a_proposal_id_is_used_once_across_both_kinds PASSED [ 85%]
+tests/test_refusals.py::test_formats_inside_embedded_objects_are_enforced PASSED [ 85%]
+tests/test_refusals.py::test_status_change_of_an_unknown_claim PASSED    [ 85%]
+tests/test_refusals.py::test_status_change_with_an_unknown_cause_event PASSED [ 86%]
+tests/test_refusals.py::test_a_cause_event_from_another_project_is_unknown PASSED [ 86%]
+tests/test_refusals.py::test_promotion_to_observed_is_guarded_too PASSED [ 87%]
+tests/test_refusals.py::test_retracting_an_unknown_claim PASSED          [ 87%]
+tests/test_refusals.py::test_second_genesis_version PASSED               [ 87%]
+tests/test_refusals.py::test_version_created_with_a_committed_parent_is_accepted PASSED [ 88%]
+tests/test_refusals.py::test_version_created_with_an_unknown_parent PASSED [ 88%]
+tests/test_refusals.py::test_a_parent_version_from_another_project_is_unknown PASSED [ 88%]
+tests/test_refusals.py::test_patch_must_be_a_valid_model_patch PASSED    [ 89%]
+tests/test_refusals.py::test_patch_base_mismatch PASSED                  [ 89%]
+tests/test_refusals.py::test_patch_proposed_on_a_stale_base PASSED       [ 89%]
+tests/test_refusals.py::test_patch_before_any_model_version PASSED       [ 90%]
+tests/test_refusals.py::test_patch_committed_from_an_unknown_proposal PASSED [ 90%]
 tests/test_refusals.py::test_proposed_check_must_be_a_valid_check PASSED [ 90%]
-tests/test_refusals.py::test_resolving_an_objection_twice PASSED         [ 90%]
-tests/test_refusals.py::test_waiver_signed_by_the_system PASSED          [ 90%]
-tests/test_refusals.py::test_experiment_with_an_uncommitted_result_claim PASSED [ 91%]
-tests/test_refusals.py::test_decision_citing_an_uncommitted_claim PASSED [ 91%]
+tests/test_refusals.py::test_resolving_an_objection_twice PASSED         [ 91%]
+tests/test_refusals.py::test_waiver_signed_by_the_system PASSED          [ 91%]
+tests/test_refusals.py::test_experiment_with_an_uncommitted_result_claim PASSED [ 92%]
+tests/test_refusals.py::test_decision_citing_an_uncommitted_claim PASSED [ 92%]
 tests/test_refusals.py::test_merge_revert_must_cite_a_committed_merge PASSED [ 92%]
-tests/test_refusals.py::test_schema_gate[change0-$.type] PASSED          [ 92%]
-tests/test_refusals.py::test_schema_gate[change1-$.idempotency_key] PASSED [ 92%]
+tests/test_refusals.py::test_schema_gate[change0-$.type] PASSED          [ 93%]
+tests/test_refusals.py::test_schema_gate[change1-$.idempotency_key] PASSED [ 93%]
 tests/test_refusals.py::test_schema_gate[change2-$] PASSED               [ 93%]
-tests/test_refusals.py::test_schema_gate[change3-$.actor.kind] PASSED    [ 93%]
+tests/test_refusals.py::test_schema_gate[change3-$.actor.kind] PASSED    [ 94%]
 tests/test_refusals.py::test_schema_gate[change4-$.event_id] PASSED      [ 94%]
 tests/test_refusals.py::test_schema_gate[change5-$.ts] PASSED            [ 94%]
-tests/test_refusals.py::test_schema_gate[change6-$.ts] PASSED            [ 94%]
+tests/test_refusals.py::test_schema_gate[change6-$.ts] PASSED            [ 95%]
 tests/test_refusals.py::test_schema_gate[change7-$.session_id] PASSED    [ 95%]
-tests/test_refusals.py::test_schema_gate[change8-$] PASSED               [ 95%]
+tests/test_refusals.py::test_schema_gate[change8-$] PASSED               [ 96%]
 tests/test_refusals.py::test_schema_gate[change9-$.payload] PASSED       [ 96%]
 tests/test_refusals.py::test_schema_gate_runs_before_the_rules PASSED    [ 96%]
-tests/test_refusals.py::test_project_mismatch PASSED                     [ 96%]
+tests/test_refusals.py::test_project_mismatch PASSED                     [ 97%]
 tests/test_refusals.py::test_candidate_must_be_an_object PASSED          [ 97%]
 tests/test_refusals.py::test_a_valid_patch_is_accepted_and_its_result_becomes_the_head_model PASSED [ 97%]
 tests/test_refusals.py::test_a_version_created_from_a_parent_copies_the_parents_model PASSED [ 98%]
@@ -477,7 +502,7 @@ tests/test_refusals.py::test_reusing_a_model_version_id PASSED           [ 99%]
 tests/test_refusals.py::test_a_patch_op_without_the_fields_its_kind_needs PASSED [ 99%]
 tests/test_refusals.py::test_a_version_id_the_system_model_cannot_carry PASSED [100%]
 
-====================== 253 passed, 2 deselected in 29.78s ======================
+====================== 277 passed, 3 deselected in 45.72s ======================
 ```
 
 Removing the per-project lock makes exit test 4 fail with a `(project_id, seq)` unique
@@ -912,12 +937,111 @@ usd; L2 does the same through the OpenAI-compatible provider. They have not been
 | G12 | `wrap_untrusted` is delimited with the source id; the rule is prepended verbatim only with `external_untrusted` | green | `test_wrap_untrusted_is_delimited_and_carries_the_source`, `test_the_untrusted_rule_is_prepended_verbatim_only_when_tainted` |
 | | Every pre-existing test green | green | the run above |
 
+## M5: ingestion, two-pass extraction, quarantine, injection defense
+
+Messy sources in, schema-valid, evidence-backed claims out, through the Arbiter. Models only
+propose content; the pipeline decides status, evidence, taint, provenance and ids.
+
+### The pipeline, in words
+
+1. **Ingest** (`sources.py`): a local file (txt, md, pdf), a PDF or a git repository
+   (`git clone --depth 1`, the resolved commit sha in the uri) becomes one `source.ingested`
+   event; raw bytes go to the content-addressed object store (`data/objects/<sha256>`,
+   `ARCHITECT_OBJECT_STORE` to move it). A repository is one source: a manifest of the
+   included files, each stored by hash; `vendor/`, `node_modules/`, `third_party/`, `dist/`,
+   `build/`, binaries and files over 512 KiB are skipped and listed as skipped. Taint: local
+   files are `user` (overridable to `internal` or `external_trusted`), repositories are
+   `external_untrusted` unless the host is in `config/ingest.yaml`'s empty allowlist. The same
+   content hash in a project is the same source (idempotency key `source:<hash>`).
+2. **Parse** (`parse.py`, `ing_segments`): segments with ids `sha256(source_id|locator)[:32]`
+   and human locators. PDF: `p.<page> ¶<n>` and, best effort via PyMuPDF `find_tables`,
+   `p.<page> table <t> row <r>` with cells as structured values; Markdown:
+   `<path>#<heading-slug> L<a>-L<b>`; Python: `<path>:<symbol> L<a>-L<b>` from the AST;
+   other code: 60-line windows `<path> L<a>-L<b>`. Rebuildable; a rebuild gives identical ids.
+3. **Pass A** (`extract.py`, tier-cheap, purpose `extract-claims-a`): segments packed into
+   calls under `pack_chars`, each wrapped by `wrap_untrusted(text, "<source_id>:<locator>")`
+   so the gateway prepends the fixed untrusted-content rule. Fixed, versioned prompt
+   (`PROMPT_VERSION`, `PIPELINE_VERSION`); strict output schema with only segment_locator,
+   subject, predicate, object, magnitude, conditions, quote. Normalization: predicate to
+   UPPER_SNAKE, entity names to slugs, units through the M3 units module. R2: a candidate
+   whose quote is not in its segment (whitespace-normalized) is dropped and counted.
+4. **Pass B** (tier-mid, `extract-claims-b`): for each segment with surviving candidates,
+   one call with only that segment, never pass A's output, excluding pass A's family when
+   the tier has another (recorded on the job). Agreement: same segment, identical normalized
+   (subject, predicate, object), equal magnitude after unit normalization or both absent, no
+   conflicting shared condition values.
+5. **Commit** (`commit.py`): deterministic id `clm_` + base32(sha256(source_id, locator,
+   SPO, magnitude, pipeline version))[:26]; `claim.proposed` then `claim.committed` as actor
+   `extractor`, status `documented`, evidence `[{source, span: locator, kind}]`, taint from
+   the source, provenance `{model_tier, prompt_hash, pipeline_version}`, `recorded_at` = the
+   source event's own timestamp (so a replay is byte-identical). Never a confidence.
+6. **Quarantine** (`ing_quarantine`): a disagreeing candidate is proposed, never committed,
+   with its reason (`pass_b_missing | spo_mismatch | magnitude_mismatch | condition_conflict`)
+   and both passes' outputs.
+
+The job runner (`pipeline.py`, `ing_jobs`, `ing_candidates`, `ing_pass_b`, `ing_metrics`)
+keys a job by (project, content hash, pipeline version), marks each stage done, and resumes
+from the first unfinished stage; the Arbiter's idempotency keys make the commit stage safe
+to repeat. All calls run under the gateway scope `{"session": "ingest:<job_id>"}`.
+
+### Grades and confidence (projection, never ledger)
+
+- **quarantined**: proposed, never committed (`proj_claim_proposals`).
+- **unverified**: committed, a single source.
+- **design_grade**: committed and corroborated by a second distinct source (different content
+  hash, same normalized SPO, compatible magnitude), or status `measured`/`observed`, or
+  referenced by a passing `check.result` or a recorded experiment (`proj_experiments`).
+- **confidence v1** (`config/confidence.yaml`): base by source tier (user 0.60, internal 0.70,
+  external_trusted 0.60, external_untrusted 0.40) + 0.10 per corroboration (cap 0.30) + 0.10
+  for two-pass agreement + 0.10 per verification event (cap 0.20), clamped to [0, 1], times
+  recency_decay 1.0. The inputs are stored beside the value (`proj_claims.confidence_inputs`).
+  Monotonic by construction. **These weights are a declared prior, not a measurement;
+  calibration against labeled data is M14.**
+
+### Metrics (`ing_metrics`, per job)
+
+`pass_a_candidates`, `dropped_quote_a`, `pass_b_calls`, `pass_b_candidates`, `dropped_quote_b`,
+`agreed`, `quarantined`, `committed`, plus the lists `committed_ids` and `quarantined`.
+
+### Commands
+
+```
+architect ingest-source --project P (--file PATH | --pdf PATH | --github URL [--ref REF]) [--origin user|internal|external_trusted]
+architect extract --project P --source S [--pipeline-version N]
+architect sources --project P
+architect claims --project P [--grade quarantined|unverified|design_grade]
+curl -F file=@doc.md localhost:8000/v1/projects/P/sources
+curl -F github_url=https://github.com/org/repo -F ref=main localhost:8000/v1/projects/P/sources
+curl -X POST localhost:8000/v1/projects/P/sources/S/extract
+curl localhost:8000/v1/projects/P/sources ; curl "localhost:8000/v1/projects/P/claims?grade=design_grade"
+```
+
+L3 (manual): put a short document in `tests/live_docs/` (gitignored), set `ANTHROPIC_API_KEY`
+in the shell, run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
+
+### Exit tests
+
+| # | Exit test | Result | Evidence (`tests/test_ingestion.py`) |
+| --- | --- | --- | --- |
+| I1 | Same file twice is one source; the git fixture is external_untrusted with a sha in the uri; a local file is user; vendor, binary and oversize files skipped | green | `test_the_same_file_twice_is_one_source`, `test_a_git_repository_is_one_external_source_with_skips`, `test_trusted_domains_are_the_only_external_trusted` |
+| I2 | Exact locators for the generated PDF and the repository; a rebuild gives identical ids | green | `test_pdf_segments_have_exact_locators`, `test_repo_segments_have_exact_locators` |
+| I3 | Agreeing passes commit a documented claim with exact evidence, taint, provenance, deterministic id; grade unverified; agreement in the confidence inputs | green | `test_agreeing_passes_commit_a_documented_claim` |
+| I4 | Each of the four disagreement reasons: proposal only, reason recorded, grade quarantined | green | `test_each_disagreement_quarantines` (4 cases) |
+| I5 | A non-verbatim quote never produces an event and is counted | green | `test_a_non_verbatim_quote_never_becomes_an_event` |
+| I6 | Re-running extract writes nothing; a new pipeline version re-extracts into new ids | green | `test_rerunning_extract_writes_nothing_and_a_new_version_re_extracts` |
+| I7 | The same claim from two different-content sources is design_grade with a higher confidence | green | `test_the_same_claim_from_two_sources_is_design_grade` |
+| I8 | H1 to H5 as specified; every extraction request tainted and ruled; no tool or exec path in the package | green | `test_h1_*` to `test_h5_*`, `test_the_extraction_package_has_no_tool_or_exec_path` |
+| I9 | No emitted claim carries a confidence; the declared function is monotonic | green | `test_confidence_is_declared_monotonic_and_never_emitted`, assertions in I3 and I8 |
+| I10 | A crash mid pass B resumes without duplicate events; ing_jobs shows the stages | green | `test_a_crash_mid_pass_b_resumes_without_duplicates` |
+| I11 | A recorded run replays in `ARCHITECT_GATEWAY_MODE=replay` to identical claims | green | `test_an_extraction_run_replays_to_identical_claims` |
+| | CLI and API; every pre-existing test green | green | `test_ingest_source_and_extract_commands`, `test_source_endpoints`; the run above |
+
 ## Not verified on Windows
 
 The database-backed tests have only run on Linux in CI. The Windows development machine has
 had no reachable PostgreSQL since the fixture landed, so they have not run there against the
-fixture, the v1.0 rules, M1.1, M2, M3, C2 or M4. What does run on Windows is green:
-`validate.py`, `replay.py`, `ruff check .`, and the 128 tests that need no database. The check is deferred to
+fixture, the v1.0 rules, M1.1, M2, M3, C2, M4 or M5. What does run on Windows is green:
+`validate.py`, `replay.py`, `ruff check .`, and the 152 tests that need no database. The check is deferred to
 M6 (Docker Desktop), per CLAUDE.md.
 
 ## Open

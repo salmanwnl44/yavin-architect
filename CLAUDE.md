@@ -51,6 +51,12 @@ Do not change the contracts.
    `config/models.yaml` names a model id, a family or a price (`tests/test_gateway.py`
    enforces both). Every attempt is recorded in the append-only `gw_calls` log; keys are
    read from the environment and never stored, logged or raised.
+9. **Models propose, the pipeline decides.** In ingestion (`architect.ingestion`) a model
+   returns only subject, predicate, object, magnitude, conditions and a verbatim quote; the
+   pipeline sets status, evidence, taint, provenance and ids, drops any candidate whose quote
+   is not in its segment, wraps every segment as untrusted data, and never executes a tool
+   (`tests/test_ingestion.py` enforces the import rule). Grade and confidence are computed in
+   the projection, never written to the ledger.
 
 ## Layout
 
@@ -71,6 +77,10 @@ Do not change the contracts.
 - `src/architect/gateway/`: the model gateway. `gateway.py` is the one public entry;
   `providers/` holds the mock, Anthropic and OpenAI-compatible adapters; `config/models.yaml`
   (repo root) is the model table.
+- `src/architect/ingestion/`: sources (`sources.py`, the one place `git` runs), segments
+  (`parse.py`), the two extraction passes (`extract.py`), commit (`commit.py`), the job runner
+  (`pipeline.py`), grades and confidence (`grades.py`); `config/ingest.yaml` and
+  `config/confidence.yaml` hold their settings.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
 - `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
 
@@ -101,8 +111,9 @@ Tests create a throwaway schema per test inside the database named by
 - After a PR merges, delete its remote branch — don't ask.
 - The Windows local-database check is deferred to M6 (Docker Desktop). Do not raise it as
   an open question before then.
-- Out of scope until their milestone: extraction, agents and sessions, Temporal workflows,
-  a graph database, vector search, UI, auth, multi-tenancy.
+- Out of scope until their milestone: agents and sessions, Temporal workflows, web and arXiv
+  connectors, entity resolution beyond exact slugs, a graph database, vector search, UI, auth,
+  multi-tenancy.
 
 ### Module report (mandatory)
 Every session ends with exactly this block and nothing after it:
