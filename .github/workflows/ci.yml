@@ -35,4 +35,16 @@ jobs:
       - name: Phase 0 fixture replays
         run: python3 phase0-contracts/fixture/replay.py
       - run: ruff check .
+      - name: Install the Temporal CLI and start a dev server (sessions, M6)
+        run: |
+          curl -sSf https://temporal.download/cli.sh | sh
+          echo "$HOME/.temporalio/bin" >> "$GITHUB_PATH"
+          "$HOME/.temporalio/bin/temporal" server start-dev --headless --log-level warn --port 7233 &
+          for i in $(seq 1 60); do
+            if "$HOME/.temporalio/bin/temporal" operator cluster health --address localhost:7233 >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          "$HOME/.temporalio/bin/temporal" operator cluster health --address localhost:7233
       - run: pytest -v
+        env:
+          ARCHITECT_TEMPORAL_ADDRESS: localhost:7233

@@ -24,6 +24,8 @@ from architect.ingestion.objectstore import LocalObjectStore
 from architect.ingestion.pipeline import Pipeline
 from architect.ingestion.sources import Ingestor
 from architect.projector import Projector
+from architect.sessions import service as session_service
+from architect.sessions.config import load_session_config
 
 MAX_PAGE = 1000
 
@@ -32,7 +34,23 @@ class ProjectIn(BaseModel):
     project_id: str = Field(min_length=1)
 
 
-def create_app(database_url: str | None = None, gateway: Gateway | None = None) -> FastAPI:
+class SessionIn(BaseModel):
+    brief: str = Field(min_length=1)
+    preset: str = "quick"
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    sources: list[str] = Field(default_factory=list)
+
+
+class SteerIn(BaseModel):
+    text: str = Field(min_length=1)
+
+
+def create_app(
+    database_url: str | None = None,
+    gateway: Gateway | None = None,
+    *,
+    temporal_address: str | None = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         load_contracts()
@@ -42,10 +60,17 @@ def create_app(database_url: str | None = None, gateway: Gateway | None = None) 
         app.state.arbiter = Arbiter(pool)
         app.state.gateway = gateway or Gateway(pool, providers=default_providers())
         app.state.object_store = LocalObjectStore()
+        app.state.temporal_address = temporal_address
+        app.state.temporal = None  # connected on the first session call
         try:
             yield
         finally:
             pool.close()
+
+    async def temporal_client(app: FastAPI):
+        if app.state.temporal is None:
+            app.state.temporal = await session_service.connect(app.state.temporal_address)
+        return app.state.temporal
 
     app = FastAPI(title="Yavin Architect ledger", version=__version__, lifespan=lifespan)
 
@@ -261,6 +286,75 @@ def create_app(database_url: str | None = None, gateway: Gateway | None = None) 
         body = dict(report.__dict__)
         body["quarantined"] = [list(x) for x in report.quarantined]
         return body
+
+    # Design sessions (M6). Starts and signals go to Temporal; reads come from the session
+    # read model and the package in the object store. The worker (`architect worker`) does
+    # the work.
+
+    @app.post("/v1/projects/{project_id}/sessions", status_code=201)
+    async def start_session(request: Request, project_id: str, body: SessionIn) -> dict[str, Any]:
+        require_project(request, project_id)
+        config = load_session_config()
+        try:
+            session = session_service.build_input(
+                config,
+                project_id=project_id,
+                brief=body.brief,
+                preset=body.preset,
+                overrides=body.overrides,
+                sources=body.sources,
+            )
+        except ValueError as error:
+            raise Rejection("MALFORMED_REQUEST", str(error), "$.preset") from error
+        client = await temporal_client(request.app)
+        await session_service.start(client, session, config.task_queue)
+        return {
+            "session_id": session.session_id,
+            "preset": session.preset,
+            "limits": session.limits,
+        }
+
+    @app.get("/v1/projects/{project_id}/sessions")
+    def list_sessions(request: Request, project_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        return {"sessions": session_service.list_sessions(request.app.state.pool, project_id)}
+
+    @app.get("/v1/projects/{project_id}/sessions/{session_id}")
+    def get_session(request: Request, project_id: str, session_id: str) -> dict[str, Any]:
+        require_project(request, project_id)
+        pool = request.app.state.pool
+        Projector(pool).catch_up(project_id)
+        detail = session_service.show(pool, request.app.state.object_store, project_id, session_id)
+        if detail is None:
+            raise Rejection(
+                "SESSION_NOT_FOUND", f"no session {session_id} in project {project_id!r}"
+            )
+        return detail
+
+    @app.post("/v1/projects/{project_id}/sessions/{session_id}/{action}")
+    async def signal_session(
+        request: Request,
+        project_id: str,
+        session_id: str,
+        action: str,
+        body: SteerIn | None = None,
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        if action not in session_service.SIGNALS:
+            raise Rejection(
+                "MALFORMED_REQUEST",
+                f"action must be one of {', '.join(session_service.SIGNALS)}",
+                "$.action",
+            )
+        if action == "steer" and body is None:
+            raise Rejection("MALFORMED_REQUEST", "steer needs a body with text", "$.text")
+        if session_service.session_row(request.app.state.pool, project_id, session_id) is None:
+            raise Rejection(
+                "SESSION_NOT_FOUND", f"no session {session_id} in project {project_id!r}"
+            )
+        client = await temporal_client(request.app)
+        await session_service.signal(client, session_id, action, body.text if body else None)
+        return {"session_id": session_id, "signal": action}
 
     # The checks engine (M3). A run records its results through the Arbiter.
 

@@ -1,0 +1,36 @@
+# Design-session presets (module M6, spec §13). One alternative per session (K = 1) until the
+# tournament lands (M11). `usd: null` is uncapped: the Industrial tier runs on local models
+# (owner decision §22-8). Wall clock is enforced by the workflow, tokens and usd by the gateway
+# through the budget.updated event each session writes at start.
+presets:
+  quick:
+    max_rounds: 3
+    wall_clock_minutes: 360
+    tokens: 2000000
+    usd: 25.0
+    human_gates: [end]
+  deep:
+    max_rounds: 5
+    wall_clock_minutes: 600
+    tokens: 6000000
+    usd: 75.0
+    human_gates: [after_attack, end]
+  exhaustive:
+    max_rounds: 10
+    wall_clock_minutes: 1440
+    tokens: 25000000
+    usd: null
+    human_gates: [end]            # owner decision §22-5: minimal human interaction
+
+architect:
+  tier: tier-frontier
+  max_tokens: 4096
+  rejection_retries: 3            # Arbiter rejections fed back before the architect gives up
+
+context:
+  token_target: 6000              # the Context Compiler packs each agent call to this many tokens
+
+checkpoint_minutes: 5             # a session.checkpoint at least this often while a phase runs
+
+temporal:
+  task_queue: architect-sessions

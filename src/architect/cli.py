@@ -272,6 +272,148 @@ def _claims(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_overrides(items: Sequence[str]) -> dict:
+    """--override key=value: numbers as numbers, `null`/`none` as uncapped."""
+    out: dict = {}
+    for item in items:
+        key, _, raw = item.partition("=")
+        if not key or not raw:
+            raise SystemExit(f"--override needs key=value, not {item!r}")
+        lowered = raw.lower()
+        if lowered in ("null", "none"):
+            out[key] = None
+        else:
+            try:
+                out[key] = int(raw)
+            except ValueError:
+                out[key] = float(raw)
+    return out
+
+
+def _worker(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect worker: the Temporal worker for design sessions (workflows + activities)."""
+    import asyncio
+
+    from architect.sessions.config import load_session_config, temporal_address
+    from architect.sessions.worker import serve
+
+    config = load_session_config()
+    wide = open_pool(args.database_url or database_url(), max_size=10)
+    try:
+        print(
+            f"session worker on task queue {args.task_queue or config.task_queue} "
+            f"at {args.address or temporal_address()}",
+            flush=True,
+        )
+        asyncio.run(
+            serve(
+                wide,
+                Gateway(wide, providers=default_providers()),
+                LocalObjectStore(),
+                config=config,
+                address=args.address,
+                task_queue=args.task_queue,
+            )
+        )
+    except KeyboardInterrupt:
+        pass
+    finally:
+        wide.close()
+    return 0
+
+
+def _session(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect session start | status | show | pause | resume | cancel | approve | reject |
+    steer."""
+    import asyncio
+
+    from architect.sessions import service
+    from architect.sessions.config import load_session_config
+
+    config = load_session_config()
+    command = args.session_command
+    if command == "start":
+        if not _project_known(pool, args.project):
+            return 1
+        try:
+            session = service.build_input(
+                config,
+                project_id=args.project,
+                brief=Path(args.brief).read_text(encoding="utf-8"),
+                preset=args.preset,
+                overrides=_parse_overrides(args.override),
+                sources=args.source,
+            )
+        except ValueError as error:
+            print(f"cannot start: {error}", file=sys.stderr)
+            return 1
+
+        async def go() -> None:
+            client = await service.connect(args.address)
+            await service.start(client, session, args.task_queue or config.task_queue)
+
+        asyncio.run(go())
+        print(
+            json.dumps(
+                {
+                    "session_id": session.session_id,
+                    "preset": session.preset,
+                    "limits": session.limits,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
+    if command == "status":
+
+        async def query() -> dict:
+            return await service.status(await service.connect(args.address), args.session)
+
+        print(json.dumps(asyncio.run(query()), indent=2, sort_keys=True))
+        return 0
+    if command == "show":
+        if not _project_known(pool, args.project):
+            return 1
+        Projector(pool).catch_up(args.project)
+        detail = service.show(pool, LocalObjectStore(), args.project, args.session)
+        if detail is None:
+            print(f"session {args.session} is not in project {args.project!r}", file=sys.stderr)
+            return 1
+        row = detail["session"]
+        print(f"session {args.session}: {row['status']} ({row['preset']}, round {row['round']})")
+        print("timeline:")
+        for step in detail["timeline"]:
+            if step["kind"] == "phase_changed":
+                print(f"  {step['ts']}  -> {step['phase']}")
+            else:
+                spend = (step["detail"] or {}).get("spend", {})
+                print(f"  {step['ts']}  checkpoint {step['phase']} spend {json.dumps(spend)}")
+        for round_ in detail["rounds"]:
+            print(f"round {round_['round']}: {json.dumps(round_, sort_keys=True)}")
+        gate = detail["gate"]
+        print(f"gate: {gate['verdict'] if gate else 'not computed'}")
+        for reason in (gate or {}).get("reasons", []):
+            print(f"  blocking: {json.dumps(reason, sort_keys=True)}")
+        print("open risks:")
+        for risk in detail["open_risks"]:
+            print(f"  {risk['id'] if isinstance(risk, dict) else risk}")
+        print(f"package: {detail['package_key'] or 'none yet'}")
+        return 0
+
+    async def send() -> None:
+        client = await service.connect(args.address)
+        await service.signal(client, args.session, command, getattr(args, "text", None))
+
+    try:
+        asyncio.run(send())
+    except ValueError as error:
+        print(f"cannot {command}: {error}", file=sys.stderr)
+        return 1
+    print(f"{command} sent to {args.session}")
+    return 0
+
+
 def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     if not _project_known(pool, args.project):
         return 1
@@ -406,6 +548,43 @@ def _parser() -> argparse.ArgumentParser:
         "--grade", default=None, choices=["quarantined", "unverified", "design_grade"]
     )
     claims.set_defaults(run=_claims)
+
+    worker = sub.add_parser("worker", help="run the Temporal worker for design sessions")
+    worker.add_argument(
+        "--address", default=None, help="Temporal (default: $ARCHITECT_TEMPORAL_ADDRESS)"
+    )
+    worker.add_argument("--task-queue", default=None, help="default: config/presets.yaml")
+    worker.set_defaults(run=_worker)
+
+    session = sub.add_parser("session", help="start, steer and inspect a design session")
+    session.add_argument(
+        "--address", default=None, help="Temporal (default: $ARCHITECT_TEMPORAL_ADDRESS)"
+    )
+    session.add_argument("--task-queue", default=None)
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+    start = session_sub.add_parser("start", help="start a session from a brief")
+    start.add_argument("--project", required=True)
+    start.add_argument("--brief", required=True, type=Path, help="a markdown file")
+    start.add_argument("--preset", default="quick", choices=["quick", "deep", "exhaustive"])
+    start.add_argument("--source", action="append", default=[], help="a path or src_ id to include")
+    start.add_argument(
+        "--override",
+        action="append",
+        default=[],
+        help="max_rounds|wall_clock_minutes|tokens|usd=value",
+    )
+    status = session_sub.add_parser("status", help="the live status query")
+    status.add_argument("--session", required=True)
+    show = session_sub.add_parser("show", help="timeline, rounds, gate, open risks, package key")
+    show.add_argument("--project", required=True)
+    show.add_argument("--session", required=True)
+    for name in ("pause", "resume", "cancel", "approve", "reject"):
+        signal = session_sub.add_parser(name, help=f"send the {name} signal")
+        signal.add_argument("--session", required=True)
+    steer = session_sub.add_parser("steer", help="send guidance the next context will include")
+    steer.add_argument("--session", required=True)
+    steer.add_argument("--text", required=True)
+    session.set_defaults(run=_session)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

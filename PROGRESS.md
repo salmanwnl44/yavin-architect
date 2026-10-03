@@ -13,13 +13,14 @@
 | C2 contracts v1.1 | **done**: P-7 to P-10 applied, additive only; contracts FROZEN v1.1; CI green |
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
+| M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
-the read side, M3 built the checks engine, and C2 moved the contracts to v1.1 (a minor
-version: optional fields and documented rules, every v1.0 document still valid). CI runs the
-whole suite on `postgres:16`: 277 passed, none skipped, the live tests deselected. See
-"Exit tests" for the output and the C1, M1.1, M2, M3, C2, M4 and M5 sections below. M6 has
-not been started.
+the read side, M3 built the checks engine, C2 moved the contracts to v1.1 (a minor version:
+optional fields and documented rules, every v1.0 document still valid), M4 built the gateway,
+M5 the ingestion pipeline and M6 the session engine. CI runs the whole suite on `postgres:16`
+with a Temporal dev server beside it: see the M6 section for the output. M7 has not been
+started.
 
 ## M0: scaffold
 
@@ -1036,16 +1037,213 @@ in the shell, run `pytest -m live -v -k l3`; it prints counts by grade, drop cou
 | I11 | A recorded run replays in `ARCHITECT_GATEWAY_MODE=replay` to identical claims | green | `test_an_extraction_run_replays_to_identical_claims` |
 | | CLI and API; every pre-existing test green | green | `test_ingest_source_and_extract_commands`, `test_source_endpoints`; the run above |
 
-## Not verified on Windows
+## M6: durable design sessions, the Architect agent v1, the Context Compiler
 
-The database-backed tests have only run on Linux in CI. The Windows development machine has
-had no reachable PostgreSQL since the fixture landed, so they have not run there against the
-fixture, the v1.0 rules, M1.1, M2, M3, C2, M4 or M5. What does run on Windows is green:
-`validate.py`, `replay.py`, `ruff check .`, and the 152 tests that need no database. The check is deferred to
-M6 (Docker Desktop), per CLAUDE.md.
+Spec §13 and principle P5: a design session is a budgeted, checkpointed workflow over nine
+phases that can be paused, resumed, steered, cancelled or killed and always ends with a
+usable result, the best design so far plus an honest list of open risks. Phase 1 scope:
+one alternative per session (K = 1; the tournament is M11), the deterministic check battery
+as the only adversary (AI adversaries are M10), research as retrieval over existing claims.
+
+### What landed
+
+- **The workflow** (`sessions/workflow.py`, Temporal, `temporalio`): deterministic by
+  construction and by test (S12): no I/O, no clock but `workflow.now()`, no randomness, and
+  every side effect an activity called by name. Signals `pause`, `resume`, `cancel`
+  (graceful: converge and package the best so far), `approve`, `reject`, `steer(text)`;
+  query `status` → `{phase, round, best_version, open_risk_count, spend, status, outcome,
+  package_key}`.
+- **The activities** (`sessions/activities.py`): every Arbiter write, gateway call,
+  projection catch-up and object-store write. Idempotent: Arbiter keys are
+  `session:<sid>:<phase>:<round>:<step>`; version ids, claim ids, proposal ids, task ids and
+  message ids are hashes of (session, phase, round, step) or of content; a retried or
+  replayed activity writes nothing twice (S6), and the gateway cache answers a repeated
+  prompt without a second charge.
+- **The Architect agent v1** (`sessions/agent.py`): purposes `frame`, `draft`, `repair`
+  on `tier-frontier`, strict output schemas (requirements with metric/target/unit/quote;
+  patch ops plus optional ADRs and questions; repairs plus waiver requests), one fixed
+  prompt per purpose (`architect-v1`) with a marker line `[architect purpose=.. round=..]`
+  the scripted test provider keys on. Its output is turned into typed protocol messages
+  (`Task`, `ClaimProposal`, `ModelPatchProposal`, `Question`) validated against
+  `agent_protocol.schema.json` and appended to `ag_messages` (same `append_only()` trigger
+  as `gw_calls`; messages reference `call_id`s and carry the compiled context's manifest and
+  dropped list). Arbiter rejections come back as the next user turn
+  (`{code, detail, json_path}`) for at most `architect.rejection_retries` (3) more attempts;
+  past that the round records the open risk `architect-could-not-produce-valid-patch:<phase>:<round>`
+  and the session goes on (S3). Waivers are never signed by the agent: a request becomes a
+  `Question` to the owner and the open risk `waiver-requested:<check>:<element>` (A5, S2).
+- **The requirement linter** (`sessions/linter.py`): a requirement is measurable when it has
+  a metric, a numeric target and a unit the M3 units module knows (the Architect's fields,
+  else parsed from the text and inferred from its vocabulary). Measurable → a `documented`
+  claim `{requirement req_<slug>} CONSTRAINS {metric}` with the magnitude, evidence the brief
+  source and the section locator of the quoted words, taint `user`. Unmeasurable → the same
+  claim without a magnitude plus the open risk `requirement-unmeasurable:<req_id>`; unknowns
+  → `unknown:<slug>`; constraints → `constraint` claims (S10, S1).
+- **The Context Compiler** (`sessions/compiler.py`): `compile(task)` → goal, the brief (frame
+  only), requirements and constraints, owner guidance (steer claims), the ranked relevant
+  claims, the compact head model, the failing checks' evidence and the remaining budget,
+  packed to `context.token_target` (6000 tokens, four characters each): the mandatory
+  sections first, then ranked claims until the target, the rest dropped with reason
+  `token_target`. The manifest (claim ids, version id, result ids) and the dropped ids with
+  reasons go on the `Task` message. A quarantined claim (proposed, never committed) is never
+  a fact whatever confidence it carries (rule 10): dropped with reason `quarantined`. An
+  `external_untrusted` claim is wrapped by `wrap_untrusted` under its claim id and the
+  request's `input_taints` say so, so the gateway prepends the fixed rule (S9). Research
+  retrieval is `rank_claims`: vocabulary overlap between the brief and a claim's triple, best
+  first, commit order on ties.
+- **Presets** (`config/presets.yaml`): quick (3 rounds, 360 min, 2M tokens, $25, end gate),
+  deep (5 rounds, 600 min, 6M tokens, $75, gate after the first attack and at the end),
+  exhaustive (10 rounds, 1440 min, 25M tokens, usd null = uncapped, end gate only, §22-5).
+  K = 1 everywhere. Overrides: `max_rounds`, `wall_clock_minutes`, `tokens`, `usd`. At start
+  the session writes `budget.updated` on scope `{session}`, so the gateway enforces tokens
+  and usd; the workflow enforces the wall clock.
+- **The read model**: `ses_sessions` (status, outcome, phase, round, best version, open risk
+  ids, spend, package key), written by the activities; the phase timeline comes from the
+  ledger (`proj_session_timeline`). The package is JSON in the object store under its content
+  hash: best version, gate verdict with reasons, every check result, the requirement trace
+  (requirement → satisfying components), open risks with evidence, waiver requests, ADRs,
+  rounds, spend and the timeline.
+- **CLI**: `architect worker`; `architect session start --project P --brief brief.md
+  [--preset quick|deep|exhaustive] [--source PATH|src_id ...] [--override key=value ...]`;
+  `architect session status|show|pause|resume|cancel|approve|reject --session S`;
+  `architect session steer --session S --text "..."`; `show` needs `--project` and prints
+  the timeline, the rounds, the gate, the open risks and the package key.
+- **API**: `POST /v1/projects/{pid}/sessions` `{brief, preset?, overrides?, sources?}`;
+  `GET /v1/projects/{pid}/sessions[/{sid}]`;
+  `POST /v1/projects/{pid}/sessions/{sid}/{pause|resume|cancel|approve|reject|steer}`
+  (steer takes `{text}`). Unknown sessions are 404 `SESSION_NOT_FOUND`.
+
+### The phase machine
+
+```
+start ── session_start: brief → user source; budget.updated {session}; ses_sessions row
+frame ─── Architect(frame) → requirements (linter) → claims; unknowns → risks   checkpoint
+research  rank_claims(brief) over committed, uncompromised claims                checkpoint
+model ─── model.version_created (genesis, or a child of the project's head)      checkpoint
+draft ─── Architect(draft) → ModelPatchProposal → patch_proposed + patch_committed
+          (rejection loop ≤ 3 retries) → ADRs                                    checkpoint
+round r:
+  attack ─ battery on the head (check.result), gate      [deep: human gate after round 1]
+  repair ─ Architect(repair, failing evidence) → one patch, or waiver requests, or nothing
+  verify ─ battery on the new head, gate                                         checkpoint
+  until the convergence rule fires
+converge  best so far = fewest blocking reasons, ties to the later version       checkpoint
+package ─ the package JSON → object store; ses_sessions.package_key              checkpoint
+end gate  status awaiting_approval until approve → approved | reject → rejected
+```
+
+`session.phase_changed` is emitted at every transition and `session.checkpoint`
+(phase, best version, open risk ids, spend from `gw_spend`) at the end of every phase and,
+by a workflow timer, at least every `checkpoint_minutes` (5) of workflow time while a phase
+runs; nothing ticks while the session is paused or waiting for a human (no compute held).
+
+**Convergence rule**: (a) the gate is ALLOWED; (b) no improvement for 2 consecutive rounds,
+improvement being fewer blocking reasons, then fewer failing or erroring checks; (c)
+`max_rounds` reached; (d) the gateway refused a call over the session's cap, or the wall
+clock ran out (checked before every step); (e) the cancel signal. Pause, steer and cancel
+take effect at the next step boundary; the wall clock is `workflow.now()` against the start.
+
+**Outcome and status.** The outcome says how the deliberation ended: `completed` (a),
+`completed_with_risks` (b or c with the gate BLOCKED), `stopped_budget`, `stopped_time`,
+`cancelled`, `rejected` (at the deep preset's mid gate), `failed` (an unexpected error after
+the activities' retries; the only outcome without a package). The status says where the
+session stands: `running`, `paused`, `awaiting_approval`, then `approved` or `rejected`, or
+the stopped outcome itself. The end human gate applies to `completed` and
+`completed_with_risks`; a session stopped by budget, time or cancel ends there with its
+package.
+
+### Decisions worth knowing
+
+- **`started_at` is the session clock's origin**, chosen by the client at start and recorded
+  on every claim the session commits (`recorded_at`) and every agent message (`ts`). The
+  workflow's own clock is `workflow.now()`. This is what lets a replay of a session be
+  content-identical (S8).
+- **The prompt sees the budget as coarse buckets** ("more than 90%", "50-90%", ...), never
+  the exact numbers: exact spend is in the checkpoints and `gw_spend`. Exact numbers in the
+  prompt would make a live run and its replay ask different questions.
+- **Replay charges nothing** (M4, G6), so a replayed session's checkpoints report the
+  recorded run's total rather than the running sum; S8 compares every payload byte for byte
+  except the checkpoints' `spend`. The replay runs into a fresh ledger (a second schema, the
+  same project id) with the gateway reading the first run's call log.
+- **The session's status is operational state, not a ledger event**: the frozen event types
+  cannot carry it (contracts-PROPOSALS P-11). Everything else a session does is in the ledger.
+- **A session in a project that already has a model starts from its head**
+  (`model.version_created` with `parent`), not from an empty genesis.
+- **Requirement claim ids derive from the brief source and the requirement**, not from the
+  session, so two sessions on the same brief share the claims; a duplicate commit is read as
+  "already committed", not as an error.
+- **Sync activities on a thread pool**, psycopg's pool underneath; each phase activity
+  catches the projector up before reading and after writing.
+- **Temporal's time-skipping test server skips time only while a test awaits a result**, so
+  the tests poll the status query and skip time explicitly (`env.sleep`) where a test is
+  about the wall clock (S5). A found-and-fixed race: a decision signal that arrives while
+  the workflow is still recording `awaiting_approval` must not be wiped.
+- **Windows**: the whole suite, including the sessions, now runs on the development machine
+  against a portable PostgreSQL 16 (no Docker needed): 1 platform bug surfaced and was fixed
+  (repository manifest order is now by POSIX path on every platform).
+
+### Running sessions locally
+
+```
+docker compose --profile sessions up -d          # Postgres 16 + Temporal dev server (UI :8233)
+pip install -e ".[dev]"
+architect init-db
+architect worker                                 # keeps running; ARCHITECT_TEMPORAL_ADDRESS=localhost:7233
+architect session start --project P --brief brief.md --preset quick
+architect session status --session ses_...       # the live query
+architect session steer --session ses_... --text "prefer at-least-once delivery"
+architect session pause|resume|cancel|approve|reject --session ses_...
+architect session show --project P --session ses_...
+curl -X POST localhost:8000/v1/projects/P/sessions -H 'content-type: application/json' \
+     -d '{"brief": "...", "preset": "deep", "overrides": {"usd": null}}'
+curl localhost:8000/v1/projects/P/sessions/ses_... ; curl -X POST .../sessions/ses_.../approve
+```
+
+Without Docker, any Temporal dev server works (`temporal server start-dev`); the tests start
+one themselves when `ARCHITECT_TEMPORAL_ADDRESS` is unset. Model calls go through the gateway
+as everywhere else: with no key in the environment the worker has only the mock provider.
+
+L4 (manual): `pytest -m live -v -k l4` with `ANTHROPIC_API_KEY` in the shell runs a real
+quick session on a tiny brief with a small cap and prints the timeline, gate, risks and usd.
+
+### Exit tests
+
+| # | Exit test | Result | Evidence (`tests/test_sessions.py` unless noted) |
+| --- | --- | --- | --- |
+| S1 | Planted flaws end to end: C-012 and C-007 caught, repaired, gate ALLOWED, package, approve → approved; the ledger in order | green | `test_s1_planted_flaws_are_caught_repaired_and_the_session_is_approved` |
+| S2 | Unrepairable C-007: stops by rule (b), `completed_with_risks`, gate BLOCKED, C-007 with evidence in the package's risks, waiver requested never signed | green | `test_s2_an_unrepairable_flaw_ends_with_risks_and_a_blocked_gate` |
+| S3 | Invalid patch → `INVALID_MODEL_RESULT` fed back → corrected; past the bound → open risk, no crash | green | `test_s3_an_invalid_patch_is_fed_back_and_corrected`, `test_s3_exceeding_the_retry_bound_is_an_open_risk_not_a_crash` |
+| S4 | Tight token cap → `stopped_budget`, best so far packaged, checkpoint spend = `gw_spend`; usd null uncapped | green | `test_s4_a_tight_token_cap_stops_the_session_with_the_best_so_far`, `test_s4_usd_null_is_uncapped` |
+| S5 | Time skipped past the preset → `stopped_time` with a package | green | `test_s5_the_wall_clock_stops_the_session_with_a_package` |
+| S6 | A worker subprocess killed after the attack phase; a new worker resumes; dense seq, unique keys, model content-identical to an uninterrupted run | green | `test_sessions_server.py::test_s6_a_killed_worker_is_resumed_by_a_new_one_without_duplicates` |
+| S7 | pause stops progress, resume continues, reject → rejected; steer enters the next context, cancel → cancelled with a package | green | `test_s7_pause_resume_and_reject`, `test_s7_steer_enters_the_next_context_and_cancel_packages` |
+| S8 | A recorded session replays in gateway replay mode to a content-identical ledger | green | `test_s8_a_recorded_session_replays_to_a_content_identical_ledger` |
+| S9 | Token target respected, dropped ids with reasons, untrusted claims wrapped and ruled, a confident quarantined claim never a fact | green | `test_s9_the_compiler_packs_to_the_target_and_never_includes_quarantined_facts` |
+| S10 | "must be fast" → unmeasurable; "p99 < 200 ms" → a claim with magnitude 200 ms | green | `test_s10_the_linter_separates_measurable_from_unmeasurable_requirements` |
+| S11 | S1 on a real Temporal dev server, green in CI | green | `test_sessions_server.py::test_s11_the_planted_flaw_session_runs_green_on_a_real_dev_server` |
+| S12 | Workflow modules import no DB, gateway, Arbiter, httpx, time or random modules | green | `test_s12_workflow_modules_import_nothing_impure` |
+| | CLI and API; every pre-existing test green | green | `test_session_cli`, `test_session_endpoints`; the run below |
+
+CI output (branch head `af2ae54`, run 37115718021 on `ubuntu-latest` with `postgres:16` and a
+Temporal dev server started by the Temporal CLI, `ARCHITECT_TEMPORAL_ADDRESS=localhost:7233`):
+
+```
+================= 295 passed, 4 deselected in 80.58s (0:01:20) =================
+```
+
+Nothing skipped; the four deselected tests are the live ones (L1, L2, L3, L4). The same suite
+on the Windows development machine against the portable PostgreSQL 16: `295 passed, 4
+deselected in 402.38s`.
+
+## Windows
+
+The database-backed tests ran only on Linux in CI through M5. With M6 the development
+machine runs the whole suite against a portable PostgreSQL 16 (the EDB binaries zip, no
+Docker) and Temporal's downloaded test servers: green, same counts as CI (295 passed, 4
+deselected).
 
 ## Open
 
-1. **The Windows local-database check is deferred to M6** (Docker Desktop), per CLAUDE.md.
-2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) stays open; P-7 to
-   P-10 were applied in v1.1. Multi-head branching is planned for contracts v1.2 with M11.
+1. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
+   session status event) stay open; P-7 to P-10 were applied in v1.1. Multi-head branching is
+   planned for contracts v1.2 with M11.

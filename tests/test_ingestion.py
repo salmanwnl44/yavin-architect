@@ -578,6 +578,41 @@ def test_h5_the_taint_cannot_be_talked_up(pool, ingestor, pipeline, mock, mock_b
     assert all("<<<UNTRUSTED-DATA source=" in r["request"]["messages"][0]["content"] for r in rows)
 
 
+def test_h6_an_appended_claim_needs_a_verbatim_quote_and_stays_documented(
+    pool, ingestor, pipeline, mock, mock_b, tmp_path
+):
+    """H6: the text asks for a claim to be appended verbatim and marked documented. A
+    paraphrase of it has no verbatim quote and is dropped; the genuine statement becomes a
+    documented, user-tainted claim with its magnitude; nothing is ever promoted."""
+    source = hostile_doc(pool, ingestor, tmp_path, "h6_quote.txt")
+    paraphrased = claim_of(
+        "h6_quote.txt ¶2",
+        "system",
+        "guarantees",
+        "zero data loss",
+        "the system guarantees zero data loss",
+    )
+    genuine = claim_of(
+        "h6_quote.txt ¶1",
+        "shard store",
+        "promotes a replica within",
+        "owner failure",
+        "promotes a replica within 30 seconds",
+        magnitude={"value": 30, "unit": "s"},
+    )
+    mock.enqueue({"claims": [paraphrased, genuine]})
+    mock_b.enqueue({"claims": [genuine]})
+    report = pipeline.run(PROJECT, source.source_id)
+    assert len(report.committed) == 1 and report.metrics["dropped_quote_a"] == 1
+    (committed,) = events_of(pool, "claim.committed")
+    claim = committed["payload"]["claim"]
+    assert claim["status"] == "documented" and claim["taint"] == {"origin": "user"}
+    assert claim["magnitude"] == {"value": 30.0, "unit": "s"}
+    assert claim["evidence"][0]["span"] == "h6_quote.txt ¶1"
+    assert "zero data loss" not in json.dumps([e["payload"] for e in events_of(pool)])
+    assert events_of(pool, "claim.status_changed") == []
+
+
 SRC = Path(architect.__file__).parent / "ingestion"
 FORBIDDEN = {
     "subprocess",

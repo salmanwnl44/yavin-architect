@@ -91,6 +91,28 @@ class Ingestor:
             license_=license_,
         )
 
+    def ingest_text(
+        self,
+        project_id: str,
+        text: str,
+        *,
+        uri: str,
+        origin: str = "user",
+        media_type: str = "text/markdown",
+    ) -> Source:
+        """Text the platform itself holds (a session brief, an owner's steer) as one source,
+        under a caller-chosen uri. The same text in a project is the same source."""
+        if origin not in LOCAL_ORIGINS:
+            raise ValueError(f"origin must be one of {LOCAL_ORIGINS}")
+        return self._record(
+            project_id,
+            text.encode("utf-8"),
+            uri=uri,
+            media_type=media_type,
+            taint_origin=origin,
+            license_=None,
+        )
+
     def ingest_github(self, project_id: str, url: str, ref: str | None = None) -> Source:
         host = urlparse(url).hostname or ""
         taint = "external_trusted" if host in self._config.trusted_domains else "external_untrusted"
@@ -124,7 +146,9 @@ class Ingestor:
         files: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
         license_ = None
-        for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        # by posix path, so the manifest order is the same on every platform
+        files_found = (p for p in root.rglob("*") if p.is_file())
+        for path in sorted(files_found, key=lambda p: p.relative_to(root).as_posix()):
             relative = path.relative_to(root).as_posix()
             parts = relative.split("/")
             if ".git" in parts[:-1]:

@@ -145,3 +145,25 @@ v2.0.
   fixture's own three results).
 - **Proposal.** A first-class `model_version` field on `CheckResult`, and `as_of_seq` with
   it, so a result's subject is part of the contract.
+
+## P-11: the ledger cannot say how a session ended or what the human decided
+
+**Status: open, for the next contract version (found in M6).**
+
+- **Problem.** The session event types in `ledger_events.schema.json` are
+  `session.phase_changed` (a `Phase`), `session.checkpoint` (phase, best version, open risk
+  ids, spend) and `budget.updated`. None of them can carry a session's status or outcome
+  (`awaiting_approval`, `approved`, `rejected`, `completed_with_risks`, `stopped_budget`,
+  `stopped_time`, `cancelled`, `failed`), the owner's approve/reject decision at a human gate,
+  a pause or a cancel, or the key of the session package. `Phase` is also closed, so the
+  convergence rule's reason (`allowed`, `no_improvement`, `max_rounds`, `budget`, `time`,
+  `cancel`) has nowhere to go either.
+- **Workaround.** M6 keeps status, outcome, stop reason, the human decision and the package
+  key in the operational table `ses_sessions` (rebuildable from Temporal history plus the
+  object store, not from the ledger), and records the owner's steer as a `user` source plus a
+  claim so that at least the guidance is in the ledger. The ledger still holds every phase
+  change, checkpoint, budget, claim, version, check result and decision of the session.
+- **Proposal.** Add `session.status_changed` `{session_id, from?, to, reason?, by?}` with the
+  status enum above, and allow `session.checkpoint` to carry an optional `package_ref`
+  (content hash). Then `ses_sessions` becomes a projection like `proj_*`, and a session's
+  whole story, including the human's decision, replays from the ledger alone.
