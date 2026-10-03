@@ -49,10 +49,19 @@ def commit_fixture(pool, project_id: str = FIX) -> Arbiter:
     across the database."""
     ledger.create_project(pool, project_id)
     arbiter = Arbiter(pool)
-    for event in fixture_events():
+    events = fixture_events()
+    renamed = {
+        e["event_id"]: f"evt_{project_id.upper():0>8}{e['seq']:04d}"
+        for e in events
+        if project_id != FIX
+    }
+    for event in events:
         candidate = as_candidate(event) | {"project_id": project_id}
-        if project_id != FIX:
-            candidate["event_id"] = f"evt_{project_id.upper():0>8}{event['seq']:04d}"
+        if renamed:
+            candidate["event_id"] = renamed[event["event_id"]]
+            for field in ("cause_event", "merge_event"):  # the fixture's references to itself
+                if candidate["payload"].get(field) in renamed:
+                    candidate["payload"][field] = renamed[candidate["payload"][field]]
         arbiter.submit(project_id, candidate)
     return arbiter
 
