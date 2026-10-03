@@ -286,10 +286,11 @@ class _Fold:
     def check_result(self) -> None:
         p = self.payload
         evidence = p.get("evidence")
-        # The v1.0 CheckResult has no model-version field (contracts-PROPOSALS.md P-10): the
-        # runner names the version in evidence.model_version; a result without it is taken to
-        # be about the head at the time.
-        named = evidence.get("model_version") if isinstance(evidence, dict) else None
+        # contracts v1.1 (P-10): the result names its model version; a v1.0 result may name it
+        # in evidence.model_version instead; one that names none judged the head of its time.
+        named = p.get("model_version")
+        if named is None and isinstance(evidence, dict):
+            named = evidence.get("model_version")
         if isinstance(named, str):
             head = {"version_id": named}
         else:

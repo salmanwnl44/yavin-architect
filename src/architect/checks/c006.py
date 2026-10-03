@@ -12,7 +12,14 @@ from typing import Any
 
 from architect.checks import units
 from architect.checks.context import CheckContext
-from architect.checks.graph import by_id, capacity_param, elements, replicas, sync_closure
+from architect.checks.graph import (
+    DEPRECATED_CONVENTION,
+    by_id,
+    capacity_binding,
+    elements,
+    replicas,
+    sync_closure,
+)
 from architect.checks.outcome import CheckOutcome, settle, skipped
 from architect.checks.waivers import check_waiver
 
@@ -29,6 +36,7 @@ def check(model: dict[str, Any], ctx: CheckContext, params: dict[str, Any]) -> C
     failing, errors, missing = [], [], []
     detail: dict[str, dict[str, Any]] = {}
     waived: dict[str, str] = {}
+    by_convention = False
     for slo in slos:
         sid = slo["id"]
         waiver = check_waiver(ctx, CHECK_ID, sid)
@@ -52,7 +60,8 @@ def check(model: dict[str, Any], ctx: CheckContext, params: dict[str, Any]) -> C
         lacking: list[str] = []
         composite = 1.0
         for cid in sync_closure(model, target_element):
-            param = capacity_param(model, cid, "availability")
+            param, deprecated = capacity_binding(model, cid, "availability")
+            by_convention = by_convention or deprecated
             count, assumed = replicas(model, components[cid])
             entry: dict[str, Any] = {"replicas": count}
             if assumed:
@@ -79,4 +88,5 @@ def check(model: dict[str, Any], ctx: CheckContext, params: dict[str, Any]) -> C
             if composite < target:
                 failing.append(sid)
         detail[sid] = entry
-    return settle(failing, errors, missing, slos=detail, waived=waived)
+    extra = {"deprecated": DEPRECATED_CONVENTION} if by_convention else {}
+    return settle(failing, errors, missing, slos=detail, waived=waived, **extra)

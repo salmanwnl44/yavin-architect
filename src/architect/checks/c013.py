@@ -3,7 +3,8 @@
 Every reference in the model resolves: flows to components and interfaces, components to
 interfaces and deployment units, requirement refs and SATISFIES links to requirements in the
 context, links to components, and the element refs of trust boundaries, state machines,
-failure modes, SLOs, cost models, observability specs and MITIGATES controls to any element.
+failure modes, SLOs, cost models, observability specs, capacity params (v1.1 applies_to)
+and MITIGATES controls to any element.
 No id names two elements. An empty model passes.
 """
 
@@ -58,6 +59,8 @@ def check(model: dict[str, Any], ctx: CheckContext, params: dict[str, Any]) -> C
     for element_type in ("slos", "cost_models", "observability_specs"):
         for element in elements(model, element_type):
             expect(element["id"], "applies_to", element["applies_to"], set(index))
+    for param in elements(model, "capacity_params"):
+        expect(param["id"], "applies_to", param.get("applies_to"), set(index))
 
     seen: dict[str, str] = {}
     duplicates: list[str] = []
