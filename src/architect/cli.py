@@ -16,6 +16,9 @@ from architect.arbiter import ARBITER_STAMPED, Arbiter
 from architect.checks import runner as check_runner
 from architect.db import database_url, ensure_schema, open_pool
 from architect.errors import Rejection
+from architect.gateway.errors import GatewayError
+from architect.gateway.gateway import Gateway, default_providers
+from architect.gateway.request import GatewayRequest
 from architect.projections import ProjectionError
 from architect.projector import DEFAULT_BATCH, DEFAULT_POLL_SECONDS, Projector
 from architect.rebuild import rebuild_state
@@ -177,6 +180,40 @@ def _gate(pool: ConnectionPool, args: argparse.Namespace) -> int:
     return 0 if verdict["verdict"] == "ALLOWED" else 2
 
 
+def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect gateway call | spend | calls."""
+    gateway = Gateway(pool, providers=default_providers())
+    if args.gateway_command == "call":
+        schema = json.loads(Path(args.schema).read_text(encoding="utf-8")) if args.schema else None
+        request = GatewayRequest(
+            role=args.role,
+            tier=args.tier,
+            purpose=args.purpose,
+            system=args.system,
+            messages=[{"role": "user", "content": args.prompt}],
+            output_schema=schema,
+            max_tokens=args.max_tokens,
+            scope={"session": args.session} if args.session else {},
+        )
+        try:
+            response = gateway.call(request)
+        except GatewayError as error:
+            print(f"gateway refused: {error}", file=sys.stderr)
+            return 1
+        print(json.dumps(response.model_dump(), indent=2, sort_keys=True))
+        return 0
+    if args.gateway_command == "spend":
+        spend = gateway.spend({"session": args.session})
+        limits = gateway.limits({"session": args.session})
+        print(json.dumps({"spend": spend, "limits": limits}, indent=2, sort_keys=True, default=str))
+        return 0
+    from architect.gateway.recorder import recent
+
+    for row in recent(pool, args.limit):
+        print(json.dumps(row, sort_keys=True, default=str))
+    return 0
+
+
 def _verify(pool: ConnectionPool, args: argparse.Namespace) -> int:
     if not _project_known(pool, args.project):
         return 1
@@ -260,6 +297,25 @@ def _parser() -> argparse.ArgumentParser:
     gate.add_argument("--version", required=True, help="model version id")
     gate.add_argument("--as-of-seq", type=int, default=None, help="default: the latest seq")
     gate.set_defaults(run=_gate)
+
+    gateway = sub.add_parser(
+        "gateway", help="the model gateway: call a tier, read spend, list calls"
+    )
+    gateway_sub = gateway.add_subparsers(dest="gateway_command", required=True)
+    call = gateway_sub.add_parser("call", help="one model call through the gateway")
+    call.add_argument("--tier", required=True, choices=["tier-cheap", "tier-mid", "tier-frontier"])
+    call.add_argument("--purpose", required=True)
+    call.add_argument("--prompt", required=True)
+    call.add_argument("--system", default="")
+    call.add_argument("--role", default="operator")
+    call.add_argument("--schema", default=None, help="a JSON Schema file for structured output")
+    call.add_argument("--max-tokens", type=int, default=1024)
+    call.add_argument("--session", default=None, help="charge the call to this session")
+    spend = gateway_sub.add_parser("spend", help="what a session has spent, and its limits")
+    spend.add_argument("--session", required=True)
+    calls = gateway_sub.add_parser("calls", help="the most recent calls in the call log")
+    calls.add_argument("--limit", type=int, default=20)
+    gateway.set_defaults(run=_gateway)
 
     init_db = sub.add_parser("init-db", help="create or update the database schema")
     init_db.set_defaults(run=_init_db)

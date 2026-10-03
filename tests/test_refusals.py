@@ -175,9 +175,7 @@ def test_proposed_claim_must_be_a_valid_claim(refuse):
 
 def test_claim_id_mismatch(commit, refuse):
     commit(source())
-    mismatched = candidate(
-        "claim.committed", {"claim_id": ident("clm", "other"), "claim": claim()}
-    )
+    mismatched = candidate("claim.committed", {"claim_id": ident("clm", "other"), "claim": claim()})
     refuse(mismatched, 422, "CLAIM_ID_MISMATCH", "$.payload.claim.id")
 
 
@@ -229,9 +227,7 @@ def test_a_proposal_id_is_used_once_across_both_kinds(commit, refuse):
 def test_formats_inside_embedded_objects_are_enforced(commit, refuse):
     commit(source())
     not_a_timestamp = claim(recorded_at="yesterday")
-    refuse(
-        claim_committed(not_a_timestamp), 422, "SCHEMA_INVALID", "$.payload.claim.recorded_at"
-    )
+    refuse(claim_committed(not_a_timestamp), 422, "SCHEMA_INVALID", "$.payload.claim.recorded_at")
 
 
 def test_status_change_of_an_unknown_claim(commit, refuse):

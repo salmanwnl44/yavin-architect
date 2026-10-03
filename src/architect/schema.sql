@@ -211,6 +211,15 @@ CREATE TABLE IF NOT EXISTS proj_checks (
     PRIMARY KEY (project_id, seq)
 );
 
+-- Budget limits as set by budget.updated, by the scope they were set on. null = uncapped.
+CREATE TABLE IF NOT EXISTS proj_budgets (
+    project_id text   NOT NULL REFERENCES projects (project_id),
+    seq        bigint NOT NULL,
+    scope      jsonb  NOT NULL,
+    limits     jsonb  NOT NULL,
+    PRIMARY KEY (project_id, seq)
+);
+
 -- Phase changes and checkpoints in commit order. ts is the event's own ts, verbatim.
 CREATE TABLE IF NOT EXISTS proj_session_timeline (
     project_id text   NOT NULL REFERENCES projects (project_id),
@@ -222,4 +231,66 @@ CREATE TABLE IF NOT EXISTS proj_session_timeline (
     detail     jsonb,
     ts         text   NOT NULL,
     PRIMARY KEY (project_id, seq)
+);
+
+-- The model gateway (M4). Not projections of the ledger: the call log is its own append-only
+-- record, the cache and the spend table are operational state.
+CREATE OR REPLACE FUNCTION append_only() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION '% is append-only: % is not allowed', TG_TABLE_NAME, TG_OP
+        USING ERRCODE = 'integrity_constraint_violation';
+END
+$$;
+
+-- Every model call: each attempt, failure, cache hit and replay. Never changed afterwards.
+CREATE TABLE IF NOT EXISTS gw_calls (
+    call_id      text        PRIMARY KEY,
+    ts           timestamptz NOT NULL DEFAULT now(),
+    scope        jsonb       NOT NULL,
+    role         text        NOT NULL,
+    purpose      text        NOT NULL,
+    tier         text        NOT NULL,
+    provider     text,
+    model        text,
+    family       text,
+    prompt_hash  text        NOT NULL,
+    request      jsonb       NOT NULL,
+    response     jsonb,
+    error        text,
+    tokens_in    integer     NOT NULL DEFAULT 0,
+    tokens_out   integer     NOT NULL DEFAULT 0,
+    usd          numeric     NOT NULL DEFAULT 0,
+    latency_ms   integer     NOT NULL DEFAULT 0,
+    cache_hit    boolean     NOT NULL DEFAULT false,
+    attempt      integer     NOT NULL,
+    status       text        NOT NULL CHECK (status IN ('ok', 'error', 'invalid_output', 'cache_hit', 'replay', 'budget_refused')),
+    input_taints jsonb       NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gw_calls_by_prompt ON gw_calls (prompt_hash, ts);
+
+CREATE OR REPLACE TRIGGER gw_calls_no_update_delete
+    BEFORE UPDATE OR DELETE ON gw_calls
+    FOR EACH ROW EXECUTE FUNCTION append_only();
+
+CREATE OR REPLACE TRIGGER gw_calls_no_truncate
+    BEFORE TRUNCATE ON gw_calls
+    FOR EACH STATEMENT EXECUTE FUNCTION append_only();
+
+-- Responses by request key; a hit never reaches a provider.
+CREATE TABLE IF NOT EXISTS gw_cache (
+    key        text        PRIMARY KEY,
+    response   jsonb       NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Spend per scope (every non-empty subset of {tenant, session, phase} a call carried).
+CREATE TABLE IF NOT EXISTS gw_spend (
+    scope_key       text    PRIMARY KEY,
+    scope           jsonb   NOT NULL,
+    tokens          bigint  NOT NULL DEFAULT 0,
+    usd             numeric NOT NULL DEFAULT 0,
+    reserved_tokens bigint  NOT NULL DEFAULT 0,
+    reserved_usd    numeric NOT NULL DEFAULT 0,
+    calls           integer NOT NULL DEFAULT 0
 );

@@ -9,10 +9,13 @@ description = "Yavin Architect: the design-verification harness. Milestone 1 is 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "anthropic>=1.11",
     "fastapi>=0.115",
+    "httpx2",
     "jsonschema>=4.23",
     "psycopg[binary,pool]>=3.2",
     "python-ulid>=2.7",
+    "pyyaml>=6",
     "referencing>=0.35",
     "rfc3339-validator>=0.1.4",
     "uvicorn>=0.30",
@@ -33,7 +36,9 @@ packages = ["src/architect"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# live tests call a real model provider; they are deselected (not skipped) unless asked for
+addopts = "-ra -m \"not live\""
+markers = ["live: calls a real model provider with a real key; run with: pytest -m live -v"]
 
 [tool.ruff]
 line-length = 100

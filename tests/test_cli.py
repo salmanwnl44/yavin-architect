@@ -110,7 +110,7 @@ def test_verify_reports_a_tampered_event(cli, ledger_file, dsn):
     cli("ingest", str(ledger_file), "--project", "sample")
     with psycopg.connect(dsn) as conn:  # only possible by disabling the append-only trigger
         conn.execute("ALTER TABLE events DISABLE TRIGGER events_no_update_delete")
-        conn.execute("UPDATE events SET payload = payload || '{\"risk\": \"none\"}' WHERE seq = 18")
+        conn.execute('UPDATE events SET payload = payload || \'{"risk": "none"}\' WHERE seq = 18')
         conn.execute("ALTER TABLE events ENABLE TRIGGER events_no_update_delete")
 
     code, out, _ = cli("verify", "--project", "sample")
