@@ -1729,6 +1729,9 @@ GET /v1/projects/{pid}/graph/path?from=&to=&max_depth= ; GET /v1/projects/{pid}/
   used; the alias table says what they answer to. A revert is one deleted alias.
 - **The AGE graph is a loaded copy**, rebuilt in full when the cursor moves. Fine for the
   graphs of today; an incremental load is the obvious next step when a project grows.
+- **AGE never runs on a pooled connection.** It keeps per-session caches, and a session that
+  has dropped a graph failed later on an unrelated statement ("label (relation) cache
+  corrupted", AGE 1.6). Each AGE query opens a connection and closes it.
 - **The AGE backend traverses breadth-first over one-hop Cypher queries** rather than one
   variable-length pattern: AGE's support for filtering relationship properties inside a
   variable-length match is thin, and it makes the two backends independent implementations.
@@ -1748,7 +1751,58 @@ GET /v1/projects/{pid}/graph/path?from=&to=&max_depth= ; GET /v1/projects/{pid}/
 
 ### Exit tests
 
-K_TABLE_PLACEHOLDER
+| # | Exit test | Result | Evidence |
+| --- | --- | --- | --- |
+| K0 | Step 0: a started row exists before the provider is called; an unclosed call is abandoned with its reservation charged; conservative spend; the retried call completes; a worker killed mid-call | green | `test_gateway.py::test_k0_*` (7 tests), `test_sessions_server.py::test_k0_a_worker_killed_in_the_middle_of_a_model_call_loses_no_spend` (real dev server, OS-level kill), `test_ingestion.py::test_a_resumed_job_abandons_the_call_its_dead_run_started` |
+| K1 | Graph: node and edge counts on the fixture and on the M5 ingestion corpus match the pinned tables; rebuild identical; every edge has provenance | green | `test_m8_graph.py::test_k1_*` (4 tests) |
+| K2 | Backend parity: GraphStore sql vs age on 20 seeded queries; VectorIndex pgvector (exact mode) vs numpy on 20 queries; HNSW recall recorded | green | `test_m8_graph.py::test_k2_the_age_backend_gives_the_same_answers_as_sql_on_twenty_seeded_queries`, `test_m8_retrieval.py::test_k2_pgvector_in_exact_mode_gives_the_same_top_k_as_numpy_and_hnsw_recall_is_recorded` (both on the knowledge image); each fallback against a reference: `::test_k2_the_sql_graph_store_agrees_with_a_reference_traversal`, `::test_k2_the_exact_vector_index_agrees_with_brute_force` (both jobs) |
+| K3 | Entity resolution with scripted embeddings: auto-merge, adjudication, types never mix, merges are events, revert restores the graph, a re-run proposes nothing, a reverted pair is not proposed again | green | `test_m8_graph.py::test_k3_*` (4 tests) |
+| K4 | Embeddings recorded in gw_calls, cached (no second provider call), budget-scoped; fastembed embeds 3 sentences | green | `test_m8_retrieval.py::test_k4_*` (4 tests); smoke job: `::test_k4_fastembed_embeds_three_sentences_and_similar_ones_are_closer` |
+| K5 | Retrieval golden (61 claims, 10 queries): every expected claim in the top 5; one query only vectors answer, one only full text, hybrid both; quarantined never by default; taint filter; signals listed | green | `test_m8_retrieval.py::test_k5_*` (4 tests) |
+| K6 | Communities: same partition on rebuild; summaries are inferred claims with derived_from and propagated taint; one changed claim regenerates exactly the affected summaries; a global query returns a summary | green | `test_m8_retrieval.py::test_k6_*` (3 tests) |
+| K7 | The S1 session and the P5 golden pass on the new compiler; S9's rules hold | green | `test_sessions.py::test_s1_*`, `::test_s9_*` and `test_m7_golden.py::test_p5_*`, all unchanged; `test_m8_retrieval.py::test_k7_the_compiler_ranks_with_hybrid_retrieval_and_keeps_its_rules` |
+| K8 | 10,000 synthetic claims on pgvector: search p95 < 500 ms | green | `test_m8_retrieval.py::test_k8_search_over_ten_thousand_claims_stays_under_half_a_second_at_p95`: **p50 23.5 ms, p95 25.3 ms** |
+| K9 | Search never returns raw segment text without its claim; the knowledge package imports no provider SDK | green | `test_m8_retrieval.py::test_k9_*` (2 tests) |
+| | API and CLI of the knowledge plane; every pre-existing test | green | `test_m8_retrieval.py::test_search_graph_and_community_endpoints`, `::test_search_graph_resolve_and_communities_commands`; the runs below |
+
+Numbers from CI (push run 37190781914):
+
+```
+K2 HNSW recall@10 over 2000 vectors of 64 d, 20 queries: 1.000
+K8 search over 10,000 claims (4887 entities, pgvector HNSW, 64 d): p50 23.5 ms, p95 25.3 ms, max 29.6 ms over 100 queries; indexing 23.8 s
+fastembed BAAI/bge-small-en-v1.5: similar 0.777, unrelated 0.471
+```
+
+K8 uses the mock embedder's 64-d vectors and claims written straight into the read models
+(the ledger path would fold grades 10,000 times over); it times the whole search: the query
+embedding, full text, pgvector HNSW, the entity match, the graph expansion and the fusion.
+
+CI output (branch head `4b82d37`, push run 37190781914 on `ubuntu-latest`, with a Temporal
+dev server started by the Temporal CLI; the pull_request run 37190784669 agreed):
+
+```
+test (age-pgvector)   ================ 373 passed, 5 deselected in 238.53s (0:03:58) =================
+test (plain)          ================ 370 passed, 8 deselected in 197.95s (0:03:17) =================
+fastembed-smoke       ====================== 1 passed, 377 deselected in 2.71s =======================
+```
+
+Nothing failed and nothing was skipped. On the knowledge image (Postgres 16, Apache AGE 1.6,
+pgvector 0.8) the five deselected tests are the four live ones and the fastembed smoke test.
+On the plain Postgres the AGE parity test, the pgvector parity test and K8 are deselected as
+well: they run where the extensions exist.
+
+The first CI run of the branch (`9b7b911`, run 37189691150) passed every M8 test on the
+knowledge image and then failed 100 later tests at setup: a test's teardown had dropped an
+AGE graph on the suite's long-lived admin connection, and AGE then failed that session's
+next statement with "label (relation) cache corrupted". The fix is in the product, not only
+the tests: the AGE backend now runs every query on a connection of its own.
+
+Local runs on Windows (portable PostgreSQL 16, no extensions: the fallbacks; mock providers):
+
+| Commit | Run | Result |
+| --- | --- | --- |
+| `a88394e` (step 0) | full suite | 340 passed, 4 deselected in 505 s |
+| `9b7b911` | full suite | 368 passed, 8 deselected in 744 s |
 
 ## Windows
 
@@ -1759,7 +1813,7 @@ deselected).
 
 ## Open
 
-1. **M7-live Part 2**: the live baseline (L1, L3, L4) and the two live golden runs that
+1. **M7-live Part 2** (still open after M8): the live baseline (L1, L3, L4) and the two live golden runs that
    decide the Phase 1 exit test. They need `ARCHITECT_ANTHROPIC_API_KEY` in the launching shell.
 2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
    session status event) stay open; P-7 to P-10 were applied in v1.1. Multi-head branching is
