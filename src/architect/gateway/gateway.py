@@ -23,7 +23,7 @@ from architect.gateway.errors import (
     StructuredOutputInvalid,
 )
 from architect.gateway.providers.base import Provider, ProviderCall, ProviderResult
-from architect.gateway.recorder import record
+from architect.gateway.recorder import lock_started, orphans, record
 from architect.gateway.request import GatewayRequest, GatewayResponse
 
 
@@ -221,9 +221,28 @@ class Gateway:
             estimate_in = estimate_tokens(system, conversation)
             estimate_usd = self.config.usd(candidate.model, estimate_in, request.max_tokens)
             try:
-                reservation = self._budget.reserve(
-                    scope, estimate_in + request.max_tokens, estimate_usd
-                )
+                # written AHEAD: the reservation and the `started` row commit together, before
+                # the provider hears anything. If this process dies during the call, the row
+                # is what remains of it (see sweep_abandoned).
+                with self._pool.connection() as conn, conn.transaction():
+                    reservation = self._budget.reserve(
+                        scope, estimate_in + request.max_tokens, estimate_usd, conn
+                    )
+                    started_id = log(
+                        **ids,
+                        response=None,
+                        error=None,
+                        tokens_in=0,
+                        tokens_out=0,
+                        usd=0.0,
+                        latency_ms=0,
+                        cache_hit=False,
+                        attempt=attempt,
+                        status="started",
+                        reserved_tokens=reservation.tokens,
+                        reserved_usd=reservation.usd,
+                        conn=conn,
+                    )
             except BudgetExceeded as refused:
                 log(
                     **ids,
@@ -242,9 +261,11 @@ class Gateway:
             try:
                 result = self._complete(candidate.provider, provider, call)
             except ProviderError as error:
-                self._budget.release(reservation)
                 latency = int((self._clock() - started) * 1000)
-                log(
+                self._close(
+                    log,
+                    started_id,
+                    reservation,
                     **ids,
                     response=None,
                     error=str(error),
@@ -263,7 +284,6 @@ class Gateway:
                 raise
             latency = int((self._clock() - started) * 1000)
             usd = self.config.usd(candidate.model, result.tokens_in, result.tokens_out)
-            self._budget.settle(reservation, result.tokens_in + result.tokens_out, usd)
             spent_in += result.tokens_in
             spent_out += result.tokens_out
             spent_usd += usd
@@ -271,7 +291,10 @@ class Gateway:
             if request.output_schema is not None:
                 parsed, problem = structured.parse(result.text, request.output_schema)
                 if problem is not None:
-                    log(
+                    self._close(
+                        log,
+                        started_id,
+                        reservation,
                         **ids,
                         response={"text": result.text},
                         error=problem,
@@ -292,7 +315,10 @@ class Gateway:
                         continue
                     raise StructuredOutputInvalid(attempt, problem)
             response = {"text": result.text, "parsed": parsed}
-            call_id = log(
+            call_id = self._close(
+                log,
+                started_id,
+                reservation,
                 **ids,
                 response=response,
                 error=None,
@@ -318,6 +344,79 @@ class Gateway:
                 cache_hit=False,
                 attempts=attempt,
             )
+
+    def _close(
+        self, log: Callable[..., str], started_id: str, reservation: Reservation, **row: Any
+    ) -> str:
+        """Close a started call: its second row and its spend, in one transaction. A call
+        the sweep had already abandoned (it was slow, not dead) is put right: the actual
+        numbers replace the reservation that was charged for it."""
+        with self._pool.connection() as conn, conn.transaction():
+            was_abandoned = lock_started(conn, started_id)
+            call_id = log(**row, started_id=started_id, conn=conn)
+            self._budget.settle(
+                reservation,
+                row["tokens_in"] + row["tokens_out"],
+                row["usd"],
+                conn,
+                was_abandoned=was_abandoned,
+            )
+        return call_id
+
+    # ------------------------------------------------------------------ calls nobody closed
+    def sweep_abandoned(
+        self, *, scope: dict[str, str] | None = None, older_than_s: float | None = None
+    ) -> list[str]:
+        """Close every `started` row that has no second row and is older than
+        `older_than_s` (default: the configured `abandon_after_s`) with an `abandoned` row,
+        and turn its reservation into spend: the provider may have been paid, so the books
+        err upwards. `scope` narrows the sweep to calls whose scope contains it. Safe to run
+        from anywhere, any number of times: each started row is closed once. Returns the
+        call ids of the started rows it abandoned."""
+        age = self.config.abandon_after_s if older_than_s is None else older_than_s
+        with self._pool.connection() as conn:
+            candidates = orphans(conn, scope=scope, older_than_s=age)
+        abandoned: list[str] = []
+        for row in candidates:
+            with self._pool.connection() as conn, conn.transaction():
+                lock_started(conn, row["call_id"])
+                closed = conn.execute(
+                    "SELECT 1 AS yes FROM gw_calls WHERE started_id = %s", (row["call_id"],)
+                ).fetchone()
+                if closed is not None:
+                    continue  # it finished, or another sweep got here first
+                record(
+                    self._pool,
+                    scope=row["scope"],
+                    role=row["role"],
+                    purpose=row["purpose"],
+                    tier=row["tier"],
+                    provider=row["provider"],
+                    model=row["model"],
+                    family=row["family"],
+                    prompt_hash=row["prompt_hash"],
+                    request={"started_id": row["call_id"]},
+                    response=None,
+                    error="started and never closed; its reservation stays charged",
+                    tokens_in=0,
+                    tokens_out=0,
+                    usd=0.0,
+                    latency_ms=0,
+                    cache_hit=False,
+                    attempt=row["attempt"],
+                    status="abandoned",
+                    input_taints=row["input_taints"],
+                    started_id=row["call_id"],
+                    reserved_tokens=row["reserved_tokens"],
+                    reserved_usd=float(row["reserved_usd"]),
+                    conn=conn,
+                )
+                Budget.abandon(
+                    conn,
+                    Reservation(row["scope"], row["reserved_tokens"], float(row["reserved_usd"])),
+                )
+            abandoned.append(row["call_id"])
+        return abandoned
 
     def _complete(self, name: str, provider: Provider, call: ProviderCall) -> ProviderResult:
         semaphore = self._semaphores.get(name)

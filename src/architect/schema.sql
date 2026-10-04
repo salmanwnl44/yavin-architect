@@ -291,10 +291,38 @@ CREATE TABLE IF NOT EXISTS gw_calls (
     latency_ms   integer     NOT NULL DEFAULT 0,
     cache_hit    boolean     NOT NULL DEFAULT false,
     attempt      integer     NOT NULL,
-    status       text        NOT NULL CHECK (status IN ('ok', 'error', 'invalid_output', 'cache_hit', 'replay', 'budget_refused')),
+    status       text        NOT NULL,
     input_taints jsonb       NOT NULL
 );
 CREATE INDEX IF NOT EXISTS gw_calls_by_prompt ON gw_calls (prompt_hash, ts);
+
+-- Write-ahead call records (M8 step 0). A provider attempt is two rows: `started` before the
+-- provider is called (with what was reserved for it), then the row that closes it, which
+-- names it in started_id. A started row nothing closed is closed by the sweep as
+-- `abandoned`. `state` is derived from `status`.
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS started_id text;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS reserved_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS reserved_usd numeric NOT NULL DEFAULT 0;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS state text GENERATED ALWAYS AS (
+    CASE status
+        WHEN 'started' THEN 'started'
+        WHEN 'abandoned' THEN 'abandoned'
+        WHEN 'error' THEN 'failed'
+        WHEN 'budget_refused' THEN 'failed'
+        ELSE 'completed'
+    END
+) STORED;
+ALTER TABLE gw_calls DROP CONSTRAINT IF EXISTS gw_calls_status_check;
+ALTER TABLE gw_calls ADD CONSTRAINT gw_calls_status_check CHECK (status IN (
+    'started', 'ok', 'error', 'invalid_output', 'cache_hit', 'replay', 'budget_refused',
+    'abandoned'
+)) NOT VALID;
+-- a started row is closed at most once by its own attempt and at most once by the sweep
+CREATE UNIQUE INDEX IF NOT EXISTS gw_calls_one_close
+    ON gw_calls (started_id) WHERE started_id IS NOT NULL AND status <> 'abandoned';
+CREATE UNIQUE INDEX IF NOT EXISTS gw_calls_one_abandon
+    ON gw_calls (started_id) WHERE status = 'abandoned';
+CREATE INDEX IF NOT EXISTS gw_calls_open ON gw_calls (ts) WHERE status = 'started';
 
 CREATE OR REPLACE TRIGGER gw_calls_no_update_delete
     BEFORE UPDATE OR DELETE ON gw_calls
@@ -321,6 +349,10 @@ CREATE TABLE IF NOT EXISTS gw_spend (
     reserved_usd    numeric NOT NULL DEFAULT 0,
     calls           integer NOT NULL DEFAULT 0
 );
+-- Abandoned calls (M8 step 0): their reservations, charged. Included in tokens, usd and calls.
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_usd numeric NOT NULL DEFAULT 0;
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_calls integer NOT NULL DEFAULT 0;
 
 -- Ingestion (M5): derived, operational state. Segments are rebuildable from the object store;
 -- jobs, candidates and quarantine from the gateway's call log.

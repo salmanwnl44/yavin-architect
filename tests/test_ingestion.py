@@ -488,7 +488,7 @@ def test_h1_status_and_confidence_in_the_output_are_rejected_by_the_schema(
             r["status"]
             for r in conn.execute("SELECT status FROM gw_calls ORDER BY ts, call_id").fetchall()
         ]
-    assert statuses[:2] == ["invalid_output", "invalid_output"]
+    assert statuses[:4] == ["started", "invalid_output", "started", "invalid_output"]
 
 
 def test_h2_a_fabricated_benchmark_without_a_verbatim_quote_is_dropped(

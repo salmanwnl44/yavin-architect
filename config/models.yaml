@@ -41,6 +41,10 @@ retries:
   max_delay_s: 8.0
 structured:
   max_retries: 2         # extra attempts after an invalid structured output
+write_ahead:
+  abandon_after_s: 30    # a `started` call with no second row after this long is
+                         # closed as `abandoned` and its reservation stays charged.
+                         # Keep it equal to temporal.heartbeat_seconds (presets.yaml).
 concurrency:             # simultaneous in-flight calls per provider
   anthropic: 4
   openai_compat: 4

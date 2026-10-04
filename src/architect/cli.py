@@ -186,7 +186,7 @@ def _gate(pool: ConnectionPool, args: argparse.Namespace) -> int:
 
 
 def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
-    """architect gateway call | spend | calls."""
+    """architect gateway call | spend | calls | sweep."""
     gateway = Gateway(pool, providers=default_providers())
     if args.gateway_command == "call":
         schema = json.loads(Path(args.schema).read_text(encoding="utf-8")) if args.schema else None
@@ -211,6 +211,11 @@ def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
         spend = gateway.spend({"session": args.session})
         limits = gateway.limits({"session": args.session})
         print(json.dumps({"spend": spend, "limits": limits}, indent=2, sort_keys=True, default=str))
+        return 0
+    if args.gateway_command == "sweep":
+        scope = {"session": args.session} if args.session else None
+        abandoned = gateway.sweep_abandoned(scope=scope, older_than_s=args.older_than)
+        print(json.dumps({"abandoned": abandoned}, indent=2))
         return 0
     from architect.gateway.recorder import recent
 
@@ -681,6 +686,13 @@ def _parser() -> argparse.ArgumentParser:
     spend.add_argument("--session", required=True)
     calls = gateway_sub.add_parser("calls", help="the most recent calls in the call log")
     calls.add_argument("--limit", type=int, default=20)
+    sweep = gateway_sub.add_parser(
+        "sweep", help="close calls that were started and never recorded; their cost stays charged"
+    )
+    sweep.add_argument("--session", default=None, help="only this session's calls")
+    sweep.add_argument(
+        "--older-than", type=float, default=None, help="seconds (default: abandon_after_s)"
+    )
     gateway.set_defaults(run=_gateway)
 
     ingest_source = sub.add_parser("ingest-source", help="ingest a file, a PDF or a git repository")

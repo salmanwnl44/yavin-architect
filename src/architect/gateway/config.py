@@ -49,6 +49,7 @@ class GatewayConfig:
     max_delay_s: float = 8.0
     structured_retries: int = 2
     concurrency: dict[str, int] = field(default_factory=dict)
+    abandon_after_s: float = 30.0  # a started call this old with no second row is lost
 
     def price(self, model: str) -> Price:
         return self.prices.get(model, Price(0.0, 0.0))
@@ -90,6 +91,7 @@ def from_mapping(data: dict[str, Any], *, openai_compat_url: str | None = None) 
         max_delay_s=float(retries.get("max_delay_s", 8.0)),
         structured_retries=int(data.get("structured", {}).get("max_retries", 2)),
         concurrency={k: int(v) for k, v in data.get("concurrency", {}).items()},
+        abandon_after_s=float(data.get("write_ahead", {}).get("abandon_after_s", 30.0)),
     )
 
 

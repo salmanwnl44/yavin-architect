@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from concurrent.futures import ThreadPoolExecutor
 
 from psycopg_pool import ConnectionPool
@@ -43,8 +44,22 @@ async def serve(
     client = await Client.connect(address or temporal_address())
     activities = SessionActivities(pool, gateway, store, config)
     worker = build_worker(client, task_queue=task_queue or config.task_queue, activities=activities)
-    if stop is None:
-        await worker.run()
-        return
-    async with worker:
-        await stop.wait()
+    sweeper = asyncio.create_task(sweep_lost_calls(gateway))
+    try:
+        if stop is None:
+            await worker.run()
+            return
+        async with worker:
+            await stop.wait()
+    finally:
+        sweeper.cancel()
+
+
+async def sweep_lost_calls(gateway: Gateway, every_s: float | None = None) -> None:
+    """The periodic sweep: model calls that were started and never closed, by any worker or
+    job, are closed as abandoned once they are older than the gateway's abandon_after_s."""
+    every = every_s if every_s is not None else gateway.config.abandon_after_s
+    while True:
+        await asyncio.sleep(every)
+        with contextlib.suppress(Exception):  # the next round tries again
+            await asyncio.to_thread(gateway.sweep_abandoned)

@@ -158,7 +158,7 @@ def test_p1_a_budget_stop_waits_at_the_gate_refuses_what_cannot_apply_and_extend
             r["status"]
             for r in conn.execute("SELECT status FROM gw_calls ORDER BY ts, call_id").fetchall()
         ]
-    assert calls == ["ok", "ok", "budget_refused", "ok"]
+    assert calls == ["started", "ok", "started", "ok", "budget_refused", "started", "ok"]
 
     assert (final["status"], final["outcome"]) == ("approved", "completed")
     assert final["best_version"] == patches[1]["payload"]["version_id"]

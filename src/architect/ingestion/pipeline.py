@@ -148,6 +148,8 @@ class Pipeline:
         stage = self._open_job(job_id, project_id, source, pipeline_version)
         report = ExtractionReport(job_id, source_id, pipeline_version, resumed_from=stage)
         session = f"ingest:{job_id}"
+        # a job that resumes closes the calls an earlier run started and never recorded
+        self._gateway.sweep_abandoned(scope={"session": session})
 
         if stage == "parse":
             self.parse(source)
