@@ -1,7 +1,8 @@
 """The Context Compiler (spec §12-6, minimal): one agent call's working context, packed to a
 token target, with a manifest of what went in and a record of what was dropped and why.
 
-Facts come from the read models only. Requirements, owner guidance, the current head model,
+Facts come from the read models only, and the ranking of the relevant ones from the
+knowledge plane's retrieval over them (M8). Requirements, owner guidance, the current head model,
 the failing check evidence and the remaining budget are always included; ranked relevant
 claims fill the rest of the budget in rank order. A claim is a fact only when it is
 committed: proposals never committed (quarantined, M5) are never included, whatever their
@@ -19,7 +20,9 @@ from typing import Any
 
 from psycopg_pool import ConnectionPool
 
+from architect.gateway.gateway import Gateway
 from architect.gateway.untrusted import wrap_untrusted
+from architect.knowledge.plane import KnowledgePlane
 from architect.projections import COMPROMISING_STATUSES
 
 # subject entity types the compiler treats as the session's own statements
@@ -101,23 +104,37 @@ def _committed_claims(pool: ConnectionPool, project_id: str) -> list[dict[str, A
         ).fetchall()
 
 
-def rank_claims(pool: ConnectionPool, project_id: str, query_text: str) -> list[dict[str, Any]]:
-    """Research retrieval (M6): committed, uncompromised claims that share vocabulary with the
-    query, best overlap first, commit order on ties. Requirements, constraints and owner
-    guidance are the session's own statements and are not ranked here."""
-    query = words(query_text)
-    ranked: list[tuple[int, int, dict[str, Any]]] = []
-    for row in _committed_claims(pool, project_id):
-        claim = row["claim"]
-        if row["status"] in COMPROMISING_STATUSES:
-            continue
-        if claim["subject"].get("entity_type") in (*REQUIREMENT_TYPES, GUIDANCE_TYPE):
-            continue
-        score = len(query & claim_words(claim))
-        if score > 0:
-            ranked.append((-score, row["first_seq"], row | {"score": score}))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    return [row for _, _, row in ranked]
+def rank_claims(
+    pool: ConnectionPool, project_id: str, query_text: str, gateway: Gateway | None = None
+) -> list[dict[str, Any]]:
+    """Research retrieval: the knowledge plane's hybrid search (M8: full text, vectors, graph
+    expansion, fused by reciprocal rank; architect.knowledge.retrieval), best first. Only
+    committed, uncompromised claims of the default grades come back, so a quarantined
+    proposal is never a fact. Requirements, constraints and owner guidance are the session's
+    own statements and are not ranked here. With a gateway that has an embedding provider
+    the vector signal is used; without one the other signals rank alone."""
+    plane = KnowledgePlane(pool, gateway)
+    found = plane.search(
+        project_id,
+        query_text,
+        scope="local",
+        k=plane.config.candidates,
+        exclude_subject_types=(*REQUIREMENT_TYPES, GUIDANCE_TYPE),
+    )
+    return [
+        {
+            "claim_id": hit["claim_id"],
+            "claim": hit["claim"],
+            "status": hit["status"],
+            "grade": hit["grade"],
+            "confidence": hit["confidence"],
+            "taint_origin": hit["taint"]["origin"],
+            "first_seq": hit["first_seq"],
+            "score": hit["score"],
+            "signals": hit["signals"],
+        }
+        for hit in found["hits"]
+    ]
 
 
 def _entity(ref: dict[str, Any]) -> str:

@@ -399,7 +399,7 @@ class SessionActivities:
         project_id, session_id = args["project_id"], args["session_id"]
         brief: str = args["brief"]
         brief_source = args["brief_source_id"]
-        ranked = rank_claims(self._pool, project_id, brief)
+        ranked = rank_claims(self._pool, project_id, brief, self._gateway)
         compiled = compile(
             self._pool,
             CompileTask(
@@ -611,7 +611,7 @@ class SessionActivities:
     # ------------------------------------------------------------------ research
     def _research(self, args: dict[str, Any]) -> dict[str, Any]:
         self._catch_up(args["project_id"])
-        ranked = rank_claims(self._pool, args["project_id"], args["brief"])
+        ranked = rank_claims(self._pool, args["project_id"], args["brief"], self._gateway)
         return {
             "claim_ids": [row["claim_id"] for row in ranked],
             "scores": {row["claim_id"]: row["score"] for row in ranked},

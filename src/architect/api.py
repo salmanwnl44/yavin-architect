@@ -23,6 +23,8 @@ from architect.ingestion.extract import PIPELINE_VERSION
 from architect.ingestion.objectstore import LocalObjectStore
 from architect.ingestion.pipeline import Pipeline
 from architect.ingestion.sources import Ingestor
+from architect.knowledge import retrieval
+from architect.knowledge.plane import KnowledgePlane
 from architect.projector import Projector
 from architect.sessions import service as session_service
 from architect.sessions.config import load_session_config
@@ -70,6 +72,7 @@ def create_app(
         app.state.arbiter = Arbiter(pool)
         app.state.gateway = gateway or Gateway(pool, providers=default_providers())
         app.state.object_store = LocalObjectStore()
+        app.state.knowledge = KnowledgePlane(pool, app.state.gateway)
         app.state.temporal_address = temporal_address
         app.state.temporal = None  # connected on the first session call
         try:
@@ -238,6 +241,93 @@ def create_app(
     def get_projection_status(request: Request, project_id: str) -> dict[str, Any]:
         require_project(request, project_id)
         return projector.status(request.app.state.pool, project_id)
+
+    # The knowledge plane (M8): search, graph traversal, communities. Search answers from the
+    # search index, which follows the read models (it is brought up to them first).
+
+    @app.get("/v1/projects/{project_id}/search")
+    def search(
+        request: Request,
+        project_id: str,
+        q: Annotated[str, Query(min_length=1)],
+        k: Annotated[int, Query(ge=1, le=200)] = 20,
+        grade: Annotated[list[str] | None, Query()] = None,
+        status: Annotated[list[str] | None, Query()] = None,
+        taint: Annotated[list[str] | None, Query()] = None,
+        entity: Annotated[list[str] | None, Query()] = None,
+        scope: str = "auto",
+    ) -> dict[str, Any]:
+        """Hybrid, claim-first search. Every hit is a claim with its status, grade, conditions,
+        taint, evidence locators and the signals that found it. grade defaults to design_grade
+        and unverified; quarantined proposals appear only when grade=quarantined is asked for."""
+        require_project(request, project_id)
+        if scope not in retrieval.SCOPES:
+            raise Rejection(
+                "MALFORMED_REQUEST",
+                f"scope must be one of {', '.join(retrieval.SCOPES)}",
+                "$.scope",
+            )
+        allowed = ("quarantined", "unverified", "design_grade")
+        if grade is not None and not set(grade) <= set(allowed):
+            raise Rejection(
+                "MALFORMED_REQUEST", f"grade must be among {', '.join(allowed)}", "$.grade"
+            )
+        return request.app.state.knowledge.search(
+            project_id,
+            q,
+            k=k,
+            grades=grade,
+            statuses=status,
+            taints=taint,
+            entities=entity,
+            scope=scope,
+        )
+
+    @app.get("/v1/projects/{project_id}/graph")
+    def get_graph(request: Request, project_id: str) -> dict[str, Any]:
+        """Node and edge counts by type, and the backends in use."""
+        require_project(request, project_id)
+        plane = request.app.state.knowledge
+        return plane.counts(project_id) | {"backends": plane.backends()}
+
+    @app.get("/v1/projects/{project_id}/graph/nodes/{node_id}/neighbors")
+    def get_neighbors(
+        request: Request,
+        project_id: str,
+        node_id: str,
+        depth: Annotated[int, Query(ge=1, le=3)] = 1,
+        edge_type: Annotated[list[str] | None, Query()] = None,
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        return request.app.state.knowledge.neighbors(
+            project_id, node_id, depth=depth, edge_types=edge_type
+        )
+
+    @app.get("/v1/projects/{project_id}/graph/path")
+    def get_path(
+        request: Request,
+        project_id: str,
+        src: Annotated[str, Query(alias="from", min_length=1)],
+        dst: Annotated[str, Query(alias="to", min_length=1)],
+        max_depth: Annotated[int, Query(ge=1, le=6)] = 4,
+        edge_type: Annotated[list[str] | None, Query()] = None,
+    ) -> dict[str, Any]:
+        """Every shortest path between two nodes, as lists of node ids."""
+        require_project(request, project_id)
+        paths = request.app.state.knowledge.paths(
+            project_id, src, dst, max_depth=max_depth, edge_types=edge_type
+        )
+        return {"from": src, "to": dst, "max_depth": max_depth, "paths": paths}
+
+    @app.get("/v1/projects/{project_id}/communities")
+    def list_communities(
+        request: Request, project_id: str, level: Annotated[int | None, Query(ge=0, le=1)] = None
+    ) -> dict[str, Any]:
+        require_project(request, project_id)
+        return {
+            "communities": request.app.state.knowledge.communities(project_id, level),
+            "level": level,
+        }
 
     # Ingestion (M5). Sources in through the Arbiter; extraction through the gateway.
 
