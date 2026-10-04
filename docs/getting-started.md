@@ -274,6 +274,34 @@ attack` is an outside kill unless you pass `--kill-mode self`.
 A waiver signed by `approve-with-risks` covers one check on one element. If another element
 fails the same check later, the gate blocks on it.
 
+## 10. Search what the project knows
+
+Once a project has claims (from `architect ingest-source` and `architect extract`, or from a
+session), you can search them and walk the graph they form:
+
+```
+architect search --project demo "what prevents split brain"
+architect graph neighbors --project demo ent:protocol:fencing-token --depth 2
+architect graph path --project demo ent:component:wal ent:property:crash-durability
+architect resolve-entities --project demo
+architect communities rebuild --project demo
+architect search --project demo "what are the main themes" --scope global
+```
+
+- Every search hit is a claim, with its status, grade, taint and the signals that found it
+  (`text`, `vector`, `graph`, `community`). Quarantined proposals are shown only with
+  `--grade quarantined`.
+- Search by meaning needs an embedding provider. The local one is optional:
+  `pip install -e ".[embeddings]"` (it downloads a small model once, then works offline).
+  Without it search still works, on full text and the graph.
+- `resolve-entities` merges entities that are one thing under two names; each merge is an
+  event you can undo with `--revert EVENT_ID --signer YOU`. It and `communities rebuild` call
+  models, so they need the key (section 3) or a local model server.
+- On Windows without Docker the graph and vector backends are the built-in fallbacks (SQL and
+  numpy). With Docker (`docker compose up -d postgres`) you get Apache AGE and pgvector.
+  The answers are the same either way; `architect graph counts --project demo` shows which
+  backends are in use.
+
 ## Where things are
 
 | What | Where |
