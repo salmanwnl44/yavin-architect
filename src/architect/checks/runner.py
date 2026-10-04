@@ -204,14 +204,19 @@ def latest_recorded_as_of(pool: ConnectionPool, project_id: str, version_id: str
 def recorded(
     pool: ConnectionPool, project_id: str, version_id: str, as_of_seq: int | None = None
 ) -> dict[str, dict[str, Any]]:
-    """The latest recorded result per check for a model version (and seq, when given)."""
+    """The latest recorded result per check for a model version, as of a seq when one is given.
+
+    A battery re-run at a later seq records a new result only for a check whose inputs
+    changed; for the others the result already on record stands (that is what idempotency on
+    the inputs hash means). So "as of seq N" is each check's latest result recorded at or
+    before N, not only those stamped with N itself."""
     query = (
         "SELECT DISTINCT ON (check_id) check_id, seq, result_id, status, element_refs, evidence "
         "FROM proj_checks WHERE project_id = %(pid)s AND version_id = %(version)s"
     )
     params: dict[str, Any] = {"pid": project_id, "version": version_id}
     if as_of_seq is not None:
-        query += " AND (evidence ->> 'as_of_seq')::bigint = %(as_of)s"
+        query += " AND (evidence ->> 'as_of_seq')::bigint <= %(as_of)s"
         params["as_of"] = as_of_seq
     query += " ORDER BY check_id, seq DESC"
     with pool.connection() as conn:

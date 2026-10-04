@@ -67,6 +67,22 @@ ACTIVITY_NAMES = (
 )
 
 
+def waiver_targets(blocking: list[dict[str, Any]]) -> list[str]:
+    """What approve_with_risks waives: one target per (check, element) among the blocking
+    reasons, "<check_id>:<element_id>", so the waiver covers those elements and no others. A
+    reason that names no element (a check with no result, or one that could not say which
+    element) is waived as the whole check; an objection by its id. In order, without repeats."""
+    targets: list[str] = []
+    for reason in blocking:
+        check_id = reason.get("check_id")
+        if check_id:
+            elements = reason.get("element_refs") or []
+            targets += [f"{check_id}:{element}" for element in elements] or [check_id]
+        elif reason.get("objection_id"):
+            targets.append(reason["objection_id"])
+    return list(dict.fromkeys(targets))
+
+
 def seed_ops(seed: Any) -> list[dict[str, Any]]:
     """A SystemModel as the patch that builds it on an empty model: one add_element per
     element, one add_link per link, in the seed's own order. The seed's version_id and
@@ -1111,15 +1127,13 @@ class SessionActivities:
 
     # ------------------------------------------------------------------ the human's decisions
     def _sign_waivers(self, args: dict[str, Any]) -> dict[str, Any]:
-        """approve_with_risks: one waiver.signed per open blocking reason, signed by the human
-        who decided (the Arbiter refuses any other actor kind), with their reason as the risk."""
+        """approve_with_risks: one waiver.signed per (check, element) among the open blocking
+        reasons (see waiver_targets), signed by the human who decided (the Arbiter refuses
+        any other actor kind), with their reason as the risk."""
         project_id, session_id = args["project_id"], args["session_id"]
         signer = args.get("signer") or "owner"
         waivers: list[dict[str, Any]] = []
-        for reason in args.get("blocking", []):
-            target = reason.get("check_id") or reason.get("objection_id")
-            if not target:
-                continue
+        for target in waiver_targets(args.get("blocking", [])):
             waiver_id = typed_id("wvr", session_id, str(args["n"]), target)
             self._event(
                 project_id,

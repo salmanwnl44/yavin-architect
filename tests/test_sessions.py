@@ -974,3 +974,35 @@ def test_session_endpoints(dsn, pool, tmp_path, monkeypatch):
         listed = client.get(base).json()["sessions"]
         assert [s["session_id"] for s in listed] == [session_id]
         assert client.get(f"{base}/ses_NOSUCH0001").status_code == 404
+
+
+# --- M7-live: the best version when later rounds change nothing -------------------------------
+
+
+def test_the_best_version_is_the_repaired_one_when_later_rounds_change_nothing(pool, tmp_path):
+    """Round 1 repairs one of two flaws; rounds 2 and 3 commit nothing, so the battery is
+    re-run on the same head and records nothing new. The head's score must stay what it was:
+    the repaired version is the best, not the draft it improved on."""
+    create_project(pool, PROJECT)
+    architect_ = ScriptedArchitect(S2_STORY)
+    activities = make_activities(pool, make_gateway(pool, architect_), tmp_path / "objects")
+
+    async def body() -> dict[str, Any]:
+        async with await time_skipping() as env:
+            return await run_to_end(env.client, activities, session_input(PROJECT), decide="reject")
+
+    final = run(body())
+    draft, repaired = (p["version_id"] for t, p in payloads(pool) if t == "model.patch_committed")
+    assert (final["outcome"], final["stop_reason"]) == ("completed_with_risks", "no_improvement")
+    assert final["best_version"] == repaired != draft
+    assert "check-fail:C-007" in final["open_risk_ids"]
+    assert "check-fail:C-012" not in final["open_risk_ids"], "round 1 repaired the backpressure"
+    package = load_package(activities._store, final["package_key"])
+    assert package["best_version"] == repaired
+    assert [r["check_id"] for r in package["gate"]["reasons"]] == ["C-007"]
+    for round_ in package["rounds"][1:]:
+        for stage in ("attack", "verify"):
+            assert round_[stage]["version"] == repaired
+            assert (round_[stage]["blocking"], round_[stage]["failing"]) == (1, 1), (
+                "a re-run on the same head reports the same score"
+            )
