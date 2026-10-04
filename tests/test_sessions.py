@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import dataclasses
 import json
+import threading
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
-from temporalio.testing import WorkflowEnvironment
+from temporalio.testing import ActivityEnvironment, WorkflowEnvironment
 
 import architect
 from architect import ledger
@@ -20,6 +22,7 @@ from architect.arbiter import Arbiter
 from architect.gateway.untrusted import UNTRUSTED_RULE, with_rule
 from architect.projector import Projector
 from architect.sessions import agent, linter
+from architect.sessions.activities import HEARTBEAT_THREAD
 from architect.sessions.agent import messages_of
 from architect.sessions.compiler import CompileTask, compile, rank_claims
 from architect.sessions.service import load_package, session_row, show, start
@@ -1006,3 +1009,76 @@ def test_the_best_version_is_the_repaired_one_when_later_rounds_change_nothing(p
             assert (round_[stage]["blocking"], round_[stage]["failing"]) == (1, 1), (
                 "a re-run on the same head reports the same score"
             )
+
+
+# --- M7-live: activities heartbeat, so a dead worker is noticed ------------------------------
+
+
+def heartbeat_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == HEARTBEAT_THREAD]
+
+
+def test_an_activity_heartbeats_for_as_long_as_it_runs_and_stops_when_it_ends(pool, tmp_path):
+    """The activity below does nothing but wait, far longer than its heartbeat timeout would
+    allow a silent one: the wrapper beats for it. When it returns, or raises, the beats end."""
+    activities = make_activities(pool, make_gateway(pool, ScriptedArchitect({})), tmp_path)
+    beats: list[tuple] = []
+    third_beat = threading.Event()
+
+    def on_heartbeat(*details: Any) -> None:
+        beats.append(details)
+        if len(beats) >= 3:
+            third_beat.set()
+
+    def waits_for_three_beats(args: dict[str, Any]) -> dict[str, Any]:
+        assert third_beat.wait(30), "no heartbeats while the activity ran"
+        if args.get("fail"):
+            raise RuntimeError("the activity failed")
+        return {"beats": len(beats)}
+
+    env = ActivityEnvironment()
+    env.info = dataclasses.replace(env.info, heartbeat_timeout=timedelta(seconds=0.6))
+    env.on_heartbeat = on_heartbeat
+    probe = activities._wrap("probe", waits_for_three_beats)
+    assert env.run(probe, {})["beats"] >= 3
+    for thread in heartbeat_threads():
+        thread.join(10)
+    assert heartbeat_threads() == [], "the beats stop with the activity"
+
+    beats.clear()
+    third_beat.clear()
+    with pytest.raises(RuntimeError, match="the activity failed"):
+        env.run(probe, {"fail": True})
+    for thread in heartbeat_threads():
+        thread.join(10)
+    assert heartbeat_threads() == [], "and with a failed one"
+
+    # no heartbeat timeout, or no activity at all: nothing to beat for
+    silent = ActivityEnvironment()
+    silent.info = dataclasses.replace(silent.info, heartbeat_timeout=None)
+    assert silent.run(activities._wrap("quiet", lambda args: {"ok": True}), {}) == {"ok": True}
+    assert activities._wrap("direct", lambda args: {"ok": True})({}) == {"ok": True}
+    assert heartbeat_threads() == []
+
+
+def test_every_activity_of_a_session_is_scheduled_with_the_heartbeat_timeout(pool, tmp_path):
+    create_project(pool, PROJECT)
+    activities = make_activities(
+        pool, make_gateway(pool, ScriptedArchitect(S1_STORY)), tmp_path / "objects"
+    )
+    session = session_input(PROJECT)
+    assert session.limits["heartbeat_seconds"] == 30, "the shipped default"
+    session.limits["heartbeat_seconds"] = 7
+
+    async def body() -> list[float]:
+        async with await time_skipping() as env:
+            await run_to_end(env.client, activities, session)
+            history = await env.client.get_workflow_handle(session.session_id).fetch_history()
+            return [
+                e.activity_task_scheduled_event_attributes.heartbeat_timeout.ToTimedelta().total_seconds()
+                for e in history.events
+                if e.HasField("activity_task_scheduled_event_attributes")
+            ]
+
+    timeouts = run(body())
+    assert len(timeouts) > 10 and set(timeouts) == {7.0}

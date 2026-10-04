@@ -1,11 +1,14 @@
 """`architect golden run`: drive one real session on a golden task and score it.
 
 The runner creates a fresh project, starts the session through Temporal like any client, and
-runs the worker in a process of its own. With kill_after="attack" the first worker ends
-abruptly once the first attack phase has completed and a second worker is started: the
-session must resume from its history. At the end gate the runner approves an ALLOWED
-package and rejects any other; it never signs a waiver. Then it reads the ledger and the
-package and writes the scorecard.
+runs the worker in a process of its own. With kill_after="attack" the first worker is lost
+once the first attack phase has completed and a second worker is started: the session must
+resume from its history. kill_mode "external" (the default of a live run) is a real kill:
+the runner sees in the ledger that the session has left the attack phase and terminates
+the worker process, and whatever it started, from outside. kill_mode "self" (the default
+of a mock run) has the worker end itself at that point. At the end gate the runner approves
+an ALLOWED package and rejects any other; it never signs a waiver. Then it reads the ledger
+and the package and writes the scorecard.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -38,6 +42,7 @@ from architect.sessions.config import TEMPORAL_ADDRESS_ENV, load_session_config
 
 FINAL = ("approved", "approved_with_risks", "rejected", "cancelled", "failed")
 KILL_POINTS = ("attack",)
+KILL_MODES = ("self", "external")
 
 
 class GoldenError(Exception):
@@ -70,6 +75,22 @@ class _Worker:
         if READY not in line:
             raise GoldenError(f"the worker did not start: {line!r}\n{self.stderr_tail()}")
 
+    def kill_hard(self) -> int:
+        """Terminate the worker from outside, with no chance to clean up, and everything it
+        started: SIGKILL to its process group, or `taskkill /F /T` on Windows (where the
+        interpreter runs behind a launcher process). Returns the exit code."""
+        pid = self.process.pid
+        if os.name == "nt":
+            subprocess.run(  # noqa: S603 - a fixed system command and our own child's pid
+                ["taskkill", "/F", "/T", "/PID", str(pid)],  # noqa: S607
+                capture_output=True,
+                check=False,
+            )
+        else:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+        return self.process.wait(timeout=60)
+
     def stop(self) -> None:
         """End the worker: close its stdin (it exits on that), and kill it if it does not."""
         if self.process.stdin is not None and not self.process.stdin.closed:
@@ -95,6 +116,7 @@ def _spawn(
     mode: str,
     provider: str,
     exit_after: str | None,
+    hold_after: str | None,
     scratch: Path,
     n: int,
 ) -> _Worker:
@@ -106,6 +128,8 @@ def _spawn(
     ]  # fmt: skip
     if exit_after:
         command += ["--exit-after", exit_after]
+    if hold_after:
+        command += ["--hold-after", hold_after]
     # the database url (and, in live mode, the key) reach the worker through the environment,
     # never the command line
     env = {
@@ -122,8 +146,16 @@ def _spawn(
         stderr=log_file,
         text=True,
         env=env,
+        # a process group of its own (POSIX), so an external kill takes exactly this worker
+        start_new_session=os.name != "nt",
     )
     return _Worker(process, log_path, log_file)
+
+
+def phase_completed(events: list[dict[str, Any]], phase: str) -> bool:
+    """A phase is over once the ledger shows the session entering the one after it."""
+    entered = [e["payload"]["to"] for e in events if e["type"] == "session.phase_changed"]
+    return phase in entered and entered.index(phase) < len(entered) - 1
 
 
 async def run_golden(
@@ -132,6 +164,8 @@ async def run_golden(
     mode: str = "review",
     live: bool = False,
     kill_after: str | None = None,
+    kill_mode: str | None = None,
+    heartbeat_seconds: int | None = None,
     dsn: str | None = None,
     address: str | None = None,
     store_dir: Path | None = None,
@@ -144,6 +178,12 @@ async def run_golden(
         raise GoldenError(f"mode must be one of {MODES}")
     if kill_after is not None and kill_after not in KILL_POINTS:
         raise GoldenError(f"--kill-after supports {KILL_POINTS}")
+    if kill_mode is not None and kill_mode not in KILL_MODES:
+        raise GoldenError(f"--kill-mode must be one of {KILL_MODES}")
+    if kill_after is None:
+        kill_mode = None
+    elif kill_mode is None:
+        kill_mode = "external" if live else "self"
     task = load_task(task_id)
     provider = "live" if live else "mock"
     if live and not anthropic_api_key():
@@ -164,7 +204,15 @@ async def run_golden(
         overrides={"usd": usd_cap},
         seed=task.seed if mode == "review" else None,
     )
-    kill: dict[str, Any] = {"performed": False, "after": kill_after, "worker_exit_code": None}
+    if heartbeat_seconds is not None:
+        session.limits["heartbeat_seconds"] = heartbeat_seconds
+    kill: dict[str, Any] = {
+        "performed": False,
+        "after": kill_after,
+        "mode": kill_mode,
+        "worker_exit_code": None,
+        "events_at_kill": None,
+    }
     workers: list[_Worker] = []
     pool = open_pool(dsn, max_size=4)
     try:
@@ -185,23 +233,50 @@ async def run_golden(
             scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="golden-")))
             stack.callback(lambda: [w.stop() for w in workers])
 
-            def spawn(exit_after: str | None) -> _Worker:
+            def spawn(exit_after: str | None = None, hold_after: str | None = None) -> _Worker:
                 worker = _spawn(
                     dsn=dsn, address=address, task_queue=task_queue, store_dir=store.root,
                     task=task, mode=mode, provider=provider, exit_after=exit_after,
-                    scratch=scratch, n=len(workers) + 1,
+                    hold_after=hold_after, scratch=scratch, n=len(workers) + 1,
                 )  # fmt: skip
                 workers.append(worker)
                 return worker
 
-            first = spawn(kill_after)
+            if kill_mode == "self":
+                first = spawn(exit_after=kill_after)
+            elif kill_mode == "external" and not live:
+                # a mock session is over in a blink: the worker parks after the phase so the
+                # kill lands in the middle of an activity. A live worker gets no such help.
+                first = spawn(hold_after=kill_after)
+            else:
+                first = spawn()
             await first.ready()
             log(f"session {session.session_id} in {project_id} ({mode}, {provider})")
             started_at = service.now_rfc3339()
             clock = time.monotonic()
             handle = await service.start(client, session, task_queue)
 
-            if kill_after is not None:
+            if kill_mode == "external":
+                limit = time.monotonic() + timeout
+                while not phase_completed(list(ledger.iter_events(pool, project_id)), kill_after):
+                    if first.process.poll() is not None:
+                        raise GoldenError(
+                            f"the worker ended before the {kill_after} phase:\n"
+                            f"{first.stderr_tail()}"
+                        )
+                    if time.monotonic() > limit:
+                        raise GoldenError(f"no {kill_after} phase within {timeout:.0f}s")
+                    await asyncio.sleep(0.2)
+                code = await asyncio.to_thread(first.kill_hard)
+                # the worker is dead: whatever the ledger holds now is all it ever wrote
+                at_kill = len(list(ledger.iter_events(pool, project_id)))
+                kill |= {"performed": True, "worker_exit_code": code, "events_at_kill": at_kill}
+                log(
+                    f"worker 1 killed from outside after {kill_after} "
+                    f"(exit code {code}, {at_kill} events); starting worker 2"
+                )
+                await spawn().ready()
+            elif kill_mode == "self":
                 line = await first.line(timeout)
                 if DYING not in line:
                     raise GoldenError(

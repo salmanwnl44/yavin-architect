@@ -10,7 +10,9 @@ database, the gateway, the Arbiter or the object store on behalf of a session.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -97,6 +99,36 @@ def seed_ops(seed: Any) -> list[dict[str, Any]]:
     return ops
 
 
+HEARTBEAT_THREAD = "session-activity-heartbeat"
+
+
+def _heartbeat_until(done: threading.Event) -> None:
+    """Heartbeat the current activity from a helper thread until `done` is set, at a third
+    of its heartbeat timeout. While the worker lives the server keeps hearing from the
+    activity, however long a model call takes; when the worker process dies the beats stop
+    and the server retries the activity elsewhere. No-op outside an activity or when the
+    activity has no heartbeat timeout."""
+    try:
+        timeout = activity.info().heartbeat_timeout
+    except RuntimeError:
+        return
+    if not timeout:
+        return
+    interval = max(0.2, timeout.total_seconds() / 3)
+
+    def beat() -> None:
+        while not done.wait(interval):
+            try:
+                activity.heartbeat()
+            except Exception:  # noqa: BLE001 - the activity is over or the worker is closing
+                return
+
+    # the activity context lives in context variables: carry it into the helper thread
+    threading.Thread(
+        target=contextvars.copy_context().run, args=(beat,), name=HEARTBEAT_THREAD, daemon=True
+    ).start()
+
+
 class _BudgetStop(Exception):
     """The gateway refused a call over the session's cap: the session stops by rule (d)."""
 
@@ -127,12 +159,17 @@ class SessionActivities:
 
     def _wrap(self, name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable:
         def run(args: dict[str, Any]) -> dict[str, Any]:
-            if self.before_activity is not None:
-                self.before_activity(name, args)
-            result = fn(args)
-            if self.after_activity is not None:
-                self.after_activity(name, args, result)
-            return result
+            alive = threading.Event()
+            _heartbeat_until(alive)
+            try:
+                if self.before_activity is not None:
+                    self.before_activity(name, args)
+                result = fn(args)
+                if self.after_activity is not None:
+                    self.after_activity(name, args, result)
+                return result
+            finally:
+                alive.set()
 
         run.__name__ = name
         run.__qualname__ = name

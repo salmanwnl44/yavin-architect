@@ -95,6 +95,14 @@
         "seq_dense": { "type": "boolean" }
       }
     },
+    "kill_mode": {
+      "enum": ["self", "external", null],
+      "description": "self: the worker ended itself after the phase. external: the runner killed the worker process from outside (an OS-level kill)."
+    },
+    "events_at_kill": {
+      "type": ["integer", "null"],
+      "description": "External kill: how many ledger events the project had when the worker was killed. Everything after them was written by the worker that resumed."
+    },
     "rounds": { "type": "integer", "minimum": 0 },
     "final_model_version": { "type": ["string", "null"] },
     "package_key": { "type": ["string", "null"] },

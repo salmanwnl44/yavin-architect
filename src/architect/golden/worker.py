@@ -4,6 +4,10 @@ A real Temporal worker in its own process, so the runner can lose one and start 
 With --exit-after attack it ends itself abruptly (os._exit, no cleanup) once the first
 attack phase has completed, refusing any further activity in the meantime so nothing is
 half done when it dies: the session's history is then all the next worker has.
+
+With --hold-after attack it does nothing to itself: once the session has left the attack
+phase it parks in the next activity, so that the runner's kill from outside lands in the
+middle of an activity even in a mock run, where a whole session takes a second.
 """
 
 from __future__ import annotations
@@ -43,6 +47,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider", required=True, choices=["live", "mock"])
     parser.add_argument("--exit-after", default=None, choices=["attack"])
     parser.add_argument(
+        "--hold-after",
+        default=None,
+        choices=["attack"],
+        help="mock runs: after this phase, park in the next activity until killed",
+    )
+    parser.add_argument(
         "--exit-when-stdin-closes",
         action="store_true",
         help="end when the parent closes this process's stdin (or dies)",
@@ -59,12 +69,24 @@ def main(argv: list[str] | None = None) -> int:
         pool, gateway, LocalObjectStore(args.store), load_session_config()
     )
     dying = threading.Event()
+    attacked = threading.Event()
+    holding = threading.Event()
 
     def before(name: str, activity_args: dict[str, Any]) -> None:
         if dying.is_set():
             raise RuntimeError("this worker is exiting; the next one takes the activity")
+        if holding.is_set():
+            # Parked in the middle of an activity, heartbeating, until the process is killed
+            # from outside. This only makes the kill land at a known point in a mock run; the
+            # worker takes no part in its own death.
+            threading.Event().wait()
 
     def after(name: str, activity_args: dict[str, Any], result: dict[str, Any]) -> None:
+        if args.hold_after == "attack":
+            if name == "attack" and activity_args.get("phase") == "attack":
+                attacked.set()
+            elif name == "phase_changed" and attacked.is_set():
+                holding.set()  # the session has left the attack phase: park in what follows
         if (
             args.exit_after == "attack"
             and name == "attack"

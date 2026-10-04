@@ -50,6 +50,7 @@ def build_input(
 ) -> SessionInput:
     limits = config.preset(preset).limits(overrides)
     limits["checkpoint_minutes"] = config.checkpoint_minutes
+    limits["heartbeat_seconds"] = config.heartbeat_seconds
     return SessionInput(
         project_id=project_id,
         session_id=session_id or new_session_id(),
