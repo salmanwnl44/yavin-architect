@@ -1534,7 +1534,25 @@ after them was written by the worker that resumed.
 | 3 | `test_sessions.py::test_an_activity_heartbeats_for_as_long_as_it_runs_and_stops_when_it_ends`, `::test_every_activity_of_a_session_is_scheduled_with_the_heartbeat_timeout` | green |
 | | P6 with the worker ending itself, S6, S11 and every other pre-existing test | green |
 
-CI_OUTPUT_PLACEHOLDER
+CI output (branch head `5e58f1a`, push run 37183782227 on `ubuntu-latest` with `postgres:16`
+and a Temporal dev server started by the Temporal CLI; the pull_request run 37183787888
+agreed):
+
+```
+================ 333 passed, 4 deselected in 136.32s (0:02:16) =================
+```
+
+Nothing failed and nothing was skipped; the four deselected tests are the live ones (L1 to
+L4). Every test in the table above is PASSED by name in that log, the outside kill included
+(there it is `SIGKILL` to the worker's process group), with P6's self-ending kill, S6 and S11.
+
+Local runs on Windows (portable PostgreSQL 16, the SDK's own Temporal servers, mock providers
+only):
+
+| Commit | Run | Result |
+| --- | --- | --- |
+| `baad5ca` | full suite | 333 passed, 4 deselected in 680 s |
+| `5e58f1a` | the outside-kill test and the two heartbeat tests, 20 iterations (here the kill is `taskkill /F /T`) | 20 green, 0 failed |
 
 ### M7-live: what remains
 
