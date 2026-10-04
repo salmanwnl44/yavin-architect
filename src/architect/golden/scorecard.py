@@ -198,6 +198,8 @@ def build(
             "expected_found": set(linter_expected) <= set(linter_found),
         },
         "kill_resume": kill_resume,
+        "kill_mode": kill.get("mode") if kill.get("performed") else None,
+        "events_at_kill": kill.get("events_at_kill"),
         "rounds": len(rounds),
         "final_model_version": best,
         "package_key": final.get("package_key"),
@@ -270,7 +272,8 @@ def format_scorecard(card: dict[str, Any]) -> str:
     kill = card["kill_resume"]
     if kill["performed"]:
         lines.append(
-            f"kill/resume after {kill['after']}: clean {kill['clean']} "
+            f"kill/resume after {kill['after']} ({card.get('kill_mode')} kill): "
+            f"clean {kill['clean']} "
             f"(exit code {kill['worker_exit_code']}, duplicate keys "
             f"{kill['duplicate_idempotency_keys']}, seq dense {kill['seq_dense']})"
         )

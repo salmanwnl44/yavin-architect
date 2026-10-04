@@ -14,7 +14,7 @@ import pytest
 from architect import ledger
 from architect.arbiter import Arbiter
 from architect.checks import runner
-from architect.checks.catalog import load_catalog
+from architect.checks.catalog import REGISTRY, load_catalog
 from architect.cli import main
 from architect.errors import Rejection
 from architect.projector import Projector
@@ -422,3 +422,54 @@ def test_the_check_endpoints(client, pool):
     assert client.post(f"/v1/projects/nope/models/{V3}/checks").status_code == 404
     assert client.post(f"{base}/checks", params={"as_of_seq": -1}).status_code == 422
     assert client.get(f"/v1/projects/{PROJECT}/models/{V3}/checks").status_code == 404
+
+
+# --- M7-live: a re-run battery and the gate ---------------------------------------------------
+
+
+def test_the_gate_keeps_the_results_a_rerun_did_not_have_to_record_again(pool, fixture_project):
+    """A battery re-run records a new result only where a check's inputs changed. The gate
+    must judge every check by its latest result as of the seq, not only by those stamped
+    with the re-run's own seq (it used to call the others "not evaluated")."""
+    first = runner.run(pool, FIX, V3)
+    blocked = runner.gate(pool, FIX, V3)
+    assert reasons(blocked) == {("C-005", "error"), ("C-007", "fail")}
+
+    # a human waives C-007 for the one element that fails it. A check's inputs include the
+    # parts of the context it declares, so every check that reads the waivers records again;
+    # the others (C-013 among them) do not
+    fixture_project.submit(
+        FIX,
+        candidate(
+            "waiver.signed",
+            {
+                "waiver_id": "wvr_LEASEDURAB1",
+                "target_ref": "C-007:cmp_FIXLEASE01",
+                "risk": "accepted for the pilot",
+                "signer": "saumya",
+            },
+            actor={"kind": "human", "id": "saumya"},
+        ),
+    )
+    second = runner.run(pool, FIX, V3)
+    reads_waivers = {m.CHECK_ID for m in REGISTRY.values() if "waivers" in m.USES}
+    assert {r.check_id for r in second.results if not r.replayed} == reads_waivers
+    kept = {r.check_id for r in second.results if r.replayed}
+    assert "C-007" in reads_waivers and "C-013" in kept and len(kept) >= 1
+    assert second.as_of_seq > first.as_of_seq
+    for verdict in (runner.gate(pool, FIX, V3), runner.gate(pool, FIX, V3, second.as_of_seq)):
+        assert reasons(verdict) == {("C-005", "error")}, "C-007 is waived; nothing went missing"
+        assert verdict["as_of_seq"] == second.as_of_seq
+    assert set(runner.recorded(pool, FIX, V3, second.as_of_seq)) == {
+        r.check_id for r in second.results
+    }
+    # the knowledge as of the first battery is still what it was
+    assert reasons(runner.gate(pool, FIX, V3, first.as_of_seq)) == {
+        ("C-005", "error"),
+        ("C-007", "fail"),
+    }
+
+    # a third run in which nothing changed records nothing, and the gate at its seq agrees
+    third = runner.run(pool, FIX, V3)
+    assert all(r.replayed for r in third.results) and third.as_of_seq > second.as_of_seq
+    assert reasons(runner.gate(pool, FIX, V3, third.as_of_seq)) == {("C-005", "error")}

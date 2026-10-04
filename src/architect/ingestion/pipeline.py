@@ -184,6 +184,76 @@ class Pipeline:
         report.pass_b_excluded_families = row["pass_b_excluded_families"] or []
         return report
 
+    def progress(
+        self, project_id: str, source_id: str, pipeline_version: int = PIPELINE_VERSION
+    ) -> dict[str, Any]:
+        """How far a job got: its stage, the segments of the source, those pass A found
+        candidates in, and those pass B has answered."""
+        source = self.source(project_id, source_id)
+        job_id = typed_id("job", project_id, source.content_hash, str(pipeline_version))
+        job = self.job(job_id)
+        with self._pool.connection() as conn:
+            total = conn.execute(
+                "SELECT count(*) AS n FROM ing_segments WHERE source_id = %s", (source_id,)
+            ).fetchone()["n"]
+            with_candidates = conn.execute(
+                "SELECT count(DISTINCT segment_id) AS n FROM ing_candidates "
+                "WHERE job_id = %s AND pass = 'A'",
+                (job_id,),
+            ).fetchone()["n"]
+            answered = conn.execute(
+                "SELECT count(*) AS n FROM ing_pass_b WHERE job_id = %s", (job_id,)
+            ).fetchone()["n"]
+        return {
+            "job_id": job_id,
+            "stage": job["stage"] if job else None,
+            "segments": total,
+            "segments_with_candidates": with_candidates,
+            "segments_answered": answered,
+        }
+
+    def commit_processed(
+        self, project_id: str, source_id: str, pipeline_version: int = PIPELINE_VERSION
+    ) -> ExtractionReport:
+        """Commit what BOTH passes have finished so far, for a job that stopped part-way (its
+        budget ran out in pass B). Only candidates of segments pass B has answered are judged:
+        agreed ones are committed, disagreeing ones quarantined. Candidates of segments pass B
+        has not reached are left alone, neither committed nor quarantined, until the job is
+        resumed. Idempotent, and it does not move the job's stage: a later run() continues
+        pass B and commits the rest."""
+        source = self.source(project_id, source_id)
+        job_id = typed_id("job", project_id, source.content_hash, str(pipeline_version))
+        job = self.job(job_id)
+        stage = job["stage"] if job else "parse"
+        report = ExtractionReport(job_id, source_id, pipeline_version, resumed_from=stage)
+        if job is None or stage in ("parse", "pass_a"):
+            report.metrics = self.metrics(job_id) if job else {}
+            return report  # nothing has been through both passes yet
+        segments = self.stored_segments(source_id)
+        by_id = {s.segment_id: s for s in segments}
+        with self._pool.connection() as conn:
+            answered = {
+                r["segment_id"]
+                for r in conn.execute(
+                    "SELECT segment_id FROM ing_pass_b WHERE job_id = %s", (job_id,)
+                ).fetchall()
+            }
+        pass_a = self._candidates(job_id, "A")
+        pass_a.sort(key=lambda item: by_id[item[0].segment_id].position)
+        ready = [item for item in pass_a if item[0].segment_id in answered]
+        self._commit(
+            job_id,
+            project_id,
+            source,
+            ready,
+            self._candidates(job_id, "B"),
+            by_id,
+            pipeline_version,
+            report,
+        )
+        report.metrics = self.metrics(job_id)
+        return report
+
     def _open_job(self, job_id: str, project_id: str, source: Source, version: int) -> str:
         with self._pool.connection() as conn, conn.transaction():
             conn.execute(
@@ -264,7 +334,8 @@ class Pipeline:
                 ).fetchall()
             }
         segment_ids = list(dict.fromkeys(c.segment_id for c, _, _ in pass_a))
-        total = dropped = calls = 0
+        for metric in ("pass_b_calls", "pass_b_candidates", "dropped_quote_b"):
+            self._metric(job_id, metric, 0, add=True)  # present even when nothing is asked
         for segment_id in segment_ids:
             if segment_id in done:
                 continue
@@ -278,12 +349,9 @@ class Pipeline:
                 exclude_families=excluded,
             )
             response = self._gateway.call(request)
-            calls += 1
             candidates, lost = normalize_candidates(
                 response.parsed or {"claims": []}, {segment.locator: segment}
             )
-            total += len(candidates)
-            dropped += lost
             with self._pool.connection() as conn, conn.transaction():
                 self._store_candidates(
                     job_id, "B", candidates, response.call_id, response.family, conn
@@ -293,11 +361,13 @@ class Pipeline:
                     "ON CONFLICT DO NOTHING",
                     (job_id, segment_id, response.call_id),
                 )
+            # counted per segment, so a job stopped part-way (a crash, its budget) has
+            # counted exactly the segments it finished
+            self._metric(job_id, "pass_b_calls", 1, add=True)
+            self._metric(job_id, "pass_b_candidates", len(candidates), add=True)
+            self._metric(job_id, "dropped_quote_b", lost, add=True)
             if self.after_pass_b_segment is not None:
                 self.after_pass_b_segment(segment_id)
-        self._metric(job_id, "pass_b_calls", calls, add=True)
-        self._metric(job_id, "pass_b_candidates", total, add=True)
-        self._metric(job_id, "dropped_quote_b", dropped, add=True)
         return excluded
 
     # ---------------------------------------------------------------- commit

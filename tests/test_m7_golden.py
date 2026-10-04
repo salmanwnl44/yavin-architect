@@ -19,10 +19,12 @@ from architect.checks.context import CheckContext, index_elements
 from architect.cli import main
 from architect.contracts import first_error, load_contracts
 from architect.golden import scorecard as scoring
-from architect.golden.runner import GoldenError, default_out, run_golden
+from architect.golden.runner import GoldenError, default_out, phase_completed, run_golden
 from architect.golden.scripted import MARKER, ScriptedProvider
 from architect.golden.tasks import load_task
+from architect.golden.worker import EXIT_AFTER_KILL
 from architect.sessions import linter
+from architect.sessions.workflow import ACTIVITY_TIMEOUT
 from session_fixtures import events_of
 
 pytestmark = pytest.mark.filterwarnings("ignore::DeprecationWarning")
@@ -240,6 +242,82 @@ def test_p6_killing_the_worker_after_attack_resumes_cleanly(dsn, pool, tmp_path)
         "converge",
         "package",
     ]
+
+
+def test_p6_a_worker_killed_from_outside_in_the_middle_of_an_activity_is_resumed_cleanly(
+    dsn, pool, tmp_path
+):
+    """The real kill: the runner terminates the worker PROCESS from outside once the session
+    has left the attack phase, while the worker is in the middle of the next activity. The
+    worker takes no part in it. A new worker finishes the session from its history."""
+    card = golden(
+        dsn, tmp_path, mode="review", kill_after="attack", kill_mode="external", heartbeat_seconds=5
+    )
+    scoring.validate(card)
+    assert card["kill_mode"] == "external"
+    resume = card["kill_resume"]
+    assert (resume["performed"], resume["after"], resume["clean"]) == (True, "attack", True)
+    assert resume["duplicate_idempotency_keys"] == 0 and resume["seq_dense"] is True
+    # it did not end itself (that is exit code 7) and it did not exit normally: it was killed
+    assert resume["worker_exit_code"] not in (None, 0, EXIT_AFTER_KILL)
+    assert card["criteria"]["kill_resume_clean"] is True and card["passed"] is True
+
+    events = events_of(pool, card["project_id"])
+    at_kill = card["events_at_kill"]
+    assert 0 < at_kill < len(events), "the worker that resumed wrote the rest"
+    last_of_the_dead_worker = events[at_kill - 1]
+    assert last_of_the_dead_worker["type"] == "session.phase_changed"
+    assert last_of_the_dead_worker["payload"]["to"] == "repair", "killed right after the attack"
+    before, after = events[:at_kill], events[at_kill:]
+    assert len([e for e in before if e["type"] == "model.patch_committed"]) == 1, "the seed"
+    assert len([e for e in after if e["type"] == "model.patch_committed"]) == 1, "the repair"
+
+    # nothing was lost and nothing was done twice
+    assert [e["seq"] for e in events] == list(range(len(events)))
+    assert len({e["idempotency_key"] for e in events}) == len(events)
+    phases = [e["payload"]["to"] for e in events if e["type"] == "session.phase_changed"]
+    assert phases == [
+        "frame",
+        "research",
+        "model",
+        "attack",
+        "repair",
+        "verify",
+        "converge",
+        "package",
+    ]
+    assert (card["flaws_caught"], card["flaws_repaired"]) == (4, 4)
+    assert all(f["caught_in_round"] == 1 for f in card["planted_flaws"])
+    assert card["gate"]["verdict"] == "ALLOWED" and card["final_status"] == "approved"
+    assert ledger.verify_chain(pool, card["project_id"])[1] == []
+    # the killed activity was retried when its heartbeats stopped, not when it timed out
+    assert card["duration_s"] < ACTIVITY_TIMEOUT.total_seconds() / 10
+
+
+def test_the_kill_mode_defaults_to_self_in_mock_and_is_recorded_in_the_scorecard(dsn, tmp_path):
+    card = golden(dsn, tmp_path, mode="design", kill_after="attack")
+    scoring.validate(card)
+    assert (card["kill_mode"], card["events_at_kill"]) == ("self", None)
+    assert card["kill_resume"]["worker_exit_code"] == EXIT_AFTER_KILL
+    assert card["kill_resume"]["clean"] is True and card["passed"] is True
+    assert "kill/resume after attack (self kill): clean True" in scoring.format_scorecard(card)
+    with pytest.raises(GoldenError, match="--kill-mode must be one of"):
+        golden(dsn, tmp_path, mode="review", kill_after="attack", kill_mode="gentle")
+    for broken in (card | {"kill_mode": "gentle"}, card | {"events_at_kill": "many"}):
+        with pytest.raises(ValueError, match="scorecard invalid"):
+            scoring.validate(broken)
+
+
+def test_a_phase_is_complete_once_the_ledger_shows_the_session_entering_the_next_one():
+    def entered(*phases: str) -> list[dict[str, Any]]:
+        events = [{"type": "session.phase_changed", "payload": {"to": p}} for p in phases]
+        return [{"type": "check.result", "payload": {}}, *events]
+
+    assert not phase_completed([], "attack")
+    assert not phase_completed(entered("frame", "research", "model"), "attack")
+    assert not phase_completed(entered("frame", "research", "model", "attack"), "attack")
+    assert phase_completed(entered("frame", "research", "model", "attack", "repair"), "attack")
+    assert phase_completed(entered("frame", "model", "attack", "converge", "package"), "attack")
 
 
 # --- the command ------------------------------------------------------------------------------

@@ -56,6 +56,7 @@ class SessionConfig:
     token_target: int = 6000
     checkpoint_minutes: int = 5
     task_queue: str = "architect-sessions"
+    heartbeat_seconds: int = 30
     extra: dict[str, Any] = field(default_factory=dict)
 
     def preset(self, name: str) -> Preset:
@@ -95,6 +96,7 @@ def from_mapping(data: dict[str, Any]) -> SessionConfig:
         rejection_retries=int(architect.get("rejection_retries", 3)),
         token_target=int(data.get("context", {}).get("token_target", 6000)),
         checkpoint_minutes=int(data.get("checkpoint_minutes", 5)),
+        heartbeat_seconds=int(data.get("temporal", {}).get("heartbeat_seconds", 30)),
         task_queue=os.environ.get(TASK_QUEUE_ENV)
         or data.get("temporal", {}).get("task_queue", "architect-sessions"),
     )

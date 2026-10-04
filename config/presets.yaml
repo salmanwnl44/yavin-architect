@@ -34,3 +34,4 @@ checkpoint_minutes: 5             # a session.checkpoint at least this often whi
 
 temporal:
   task_queue: architect-sessions
+  heartbeat_seconds: 30           # an activity whose worker died is retried after this

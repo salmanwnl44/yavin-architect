@@ -901,3 +901,87 @@ def test_a_usd_cap_on_the_job_scope_stops_extraction_before_the_provider_and_it_
     assert len(report.committed) == 1
     assert mock.call_count == 1 and mock_b.call_count == 1, "pass A was not asked again"
     assert pipeline._gateway.spend(scope)["usd"] <= 1.00
+
+
+def test_a_job_stopped_at_its_cap_commits_what_both_passes_finished_and_resumes(
+    pool, ingestor, pipeline, mock, mock_b, tmp_path
+):
+    """The partial baseline L3 reports at its cap: two segments have candidates, the budget
+    lets pass B answer the first only. commit_processed commits that segment's claim and
+    leaves the other alone; a later run with a higher cap finishes without duplicates."""
+    from architect.arbiter import Arbiter
+    from architect.gateway.errors import BudgetExceeded
+    from architect.gateway.providers.mock import Scripted
+    from architect.ingestion.normalize import typed_id
+    from builders import candidate
+
+    source = ingest_readme(pool, ingestor, tmp_path)
+    job_id = typed_id("job", PROJECT, source.content_hash, str(PIPELINE_VERSION))
+    scope = {"session": f"ingest:{job_id}"}
+
+    def set_cap(usd: float) -> None:
+        Arbiter(pool).submit(
+            PROJECT,
+            candidate(
+                "budget.updated",
+                {"scope": scope, "limits": {"usd": usd}},
+                actor={"kind": "human", "id": "live-test"},
+            ),
+        )
+        catch_up(pool)
+
+    fencing = claim_of(FENCING_LOCATOR, "WAL", "rejects", "stale epoch appends", FENCING_QUOTE)
+    capacity = claim_of(
+        "README.md#capacity L10-L12",
+        "router",
+        "sustains",
+        "2000 writes/s",
+        "sustains 2000 writes per second",
+    )
+    mock.enqueue({"claims": [fencing, capacity]})
+    # pass B's first answer is expensive (about 3.6 cents), so after it a second reservation
+    # of about 4 cents no longer fits under a 7 cent cap
+    mock_b.enqueue(Scripted({"claims": [fencing]}, tokens_in=3000, tokens_out=3000))
+    set_cap(0.07)
+    with pytest.raises(BudgetExceeded):
+        pipeline.run(PROJECT, source.source_id)
+    assert mock.call_count == 1 and mock_b.call_count == 1
+    assert events_of(pool, "claim.proposed", "claim.committed") == [], "nothing committed yet"
+    progress = pipeline.progress(PROJECT, source.source_id)
+    assert progress == {
+        "job_id": job_id,
+        "stage": "pass_b",
+        "segments": 3,
+        "segments_with_candidates": 2,
+        "segments_answered": 1,
+    }
+
+    partial = pipeline.commit_processed(PROJECT, source.source_id)
+    assert partial.resumed_from == "pass_b" and len(partial.committed) == 1
+    assert partial.quarantined == [], "the unanswered segment is not judged, so not quarantined"
+    assert partial.metrics["pass_b_calls"] == 1 and partial.metrics["committed"] == 1
+    assert partial.metrics["dropped_quote_a"] == 0 and partial.metrics["dropped_quote_b"] == 0
+    (committed,) = events_of(pool, "claim.committed")
+    assert committed["payload"]["claim"]["evidence"][0]["span"] == FENCING_LOCATOR
+    assert len(events_of(pool, "claim.proposed")) == 1
+    assert typed_job(pool)["stage"] == "pass_b", "the job is still where it stopped"
+    again = pipeline.commit_processed(PROJECT, source.source_id)
+    assert again.committed == partial.committed and len(events_of(pool, "claim.committed")) == 1
+    catch_up(pool)
+    assert [r["grade"] for r in readmodel.claims_by_grade(pool, PROJECT, None)] == ["unverified"]
+    assert pipeline._gateway.spend(scope)["usd"] <= 0.07
+
+    # a higher cap: the job resumes at the second segment and commits the rest, once
+    mock_b.enqueue({"claims": [capacity]})
+    set_cap(1.00)
+    report = pipeline.run(PROJECT, source.source_id)
+    assert report.resumed_from == "pass_b" and len(report.committed) == 2
+    assert report.committed[0] == partial.committed[0]
+    assert mock.call_count == 1 and mock_b.call_count == 2
+    assert report.metrics["pass_b_calls"] == 2
+    assert len(events_of(pool, "claim.committed")) == 2
+    assert len(events_of(pool, "claim.proposed")) == 2
+    final = pipeline.progress(PROJECT, source.source_id)
+    assert (final["stage"], final["segments_answered"]) == ("done", 2)
+    assert pipeline.commit_processed(PROJECT, source.source_id).committed == report.committed
+    assert len(events_of(pool, "claim.committed")) == 2

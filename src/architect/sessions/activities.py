@@ -10,7 +10,9 @@ database, the gateway, the Arbiter or the object store on behalf of a session.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,22 @@ ACTIVITY_NAMES = (
 )
 
 
+def waiver_targets(blocking: list[dict[str, Any]]) -> list[str]:
+    """What approve_with_risks waives: one target per (check, element) among the blocking
+    reasons, "<check_id>:<element_id>", so the waiver covers those elements and no others. A
+    reason that names no element (a check with no result, or one that could not say which
+    element) is waived as the whole check; an objection by its id. In order, without repeats."""
+    targets: list[str] = []
+    for reason in blocking:
+        check_id = reason.get("check_id")
+        if check_id:
+            elements = reason.get("element_refs") or []
+            targets += [f"{check_id}:{element}" for element in elements] or [check_id]
+        elif reason.get("objection_id"):
+            targets.append(reason["objection_id"])
+    return list(dict.fromkeys(targets))
+
+
 def seed_ops(seed: Any) -> list[dict[str, Any]]:
     """A SystemModel as the patch that builds it on an empty model: one add_element per
     element, one add_link per link, in the seed's own order. The seed's version_id and
@@ -79,6 +97,36 @@ def seed_ops(seed: Any) -> list[dict[str, Any]]:
         for link in links:
             ops.append({"op": "add_link", "link_type": link_type, "link": link})
     return ops
+
+
+HEARTBEAT_THREAD = "session-activity-heartbeat"
+
+
+def _heartbeat_until(done: threading.Event) -> None:
+    """Heartbeat the current activity from a helper thread until `done` is set, at a third
+    of its heartbeat timeout. While the worker lives the server keeps hearing from the
+    activity, however long a model call takes; when the worker process dies the beats stop
+    and the server retries the activity elsewhere. No-op outside an activity or when the
+    activity has no heartbeat timeout."""
+    try:
+        timeout = activity.info().heartbeat_timeout
+    except RuntimeError:
+        return
+    if not timeout:
+        return
+    interval = max(0.2, timeout.total_seconds() / 3)
+
+    def beat() -> None:
+        while not done.wait(interval):
+            try:
+                activity.heartbeat()
+            except Exception:  # noqa: BLE001 - the activity is over or the worker is closing
+                return
+
+    # the activity context lives in context variables: carry it into the helper thread
+    threading.Thread(
+        target=contextvars.copy_context().run, args=(beat,), name=HEARTBEAT_THREAD, daemon=True
+    ).start()
 
 
 class _BudgetStop(Exception):
@@ -111,12 +159,17 @@ class SessionActivities:
 
     def _wrap(self, name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable:
         def run(args: dict[str, Any]) -> dict[str, Any]:
-            if self.before_activity is not None:
-                self.before_activity(name, args)
-            result = fn(args)
-            if self.after_activity is not None:
-                self.after_activity(name, args, result)
-            return result
+            alive = threading.Event()
+            _heartbeat_until(alive)
+            try:
+                if self.before_activity is not None:
+                    self.before_activity(name, args)
+                result = fn(args)
+                if self.after_activity is not None:
+                    self.after_activity(name, args, result)
+                return result
+            finally:
+                alive.set()
 
         run.__name__ = name
         run.__qualname__ = name
@@ -1111,15 +1164,13 @@ class SessionActivities:
 
     # ------------------------------------------------------------------ the human's decisions
     def _sign_waivers(self, args: dict[str, Any]) -> dict[str, Any]:
-        """approve_with_risks: one waiver.signed per open blocking reason, signed by the human
-        who decided (the Arbiter refuses any other actor kind), with their reason as the risk."""
+        """approve_with_risks: one waiver.signed per (check, element) among the open blocking
+        reasons (see waiver_targets), signed by the human who decided (the Arbiter refuses
+        any other actor kind), with their reason as the risk."""
         project_id, session_id = args["project_id"], args["session_id"]
         signer = args.get("signer") or "owner"
         waivers: list[dict[str, Any]] = []
-        for reason in args.get("blocking", []):
-            target = reason.get("check_id") or reason.get("objection_id")
-            if not target:
-                continue
+        for target in waiver_targets(args.get("blocking", [])):
             waiver_id = typed_id("wvr", session_id, str(args["n"]), target)
             self._event(
                 project_id,

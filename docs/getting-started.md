@@ -191,7 +191,7 @@ whether it converged, ran out of rounds, or was stopped by its budget or the wal
 | Decision | When it applies | What it does |
 | --- | --- | --- |
 | `approve` | the package's gate verdict is ALLOWED | ends the session as `approved` |
-| `approve-with-risks --reason "..."` | any package | signs one waiver per blocking reason, in your name, with your reason; ends as `approved_with_risks` |
+| `approve-with-risks --reason "..."` | any package | signs one waiver per blocking check and element, in your name, with your reason; ends as `approved_with_risks` |
 | `reject` | any package | ends as `rejected` |
 | `extend` | the session was stopped by budget or wall clock | raises the limits and resumes from the best version so far |
 
@@ -249,6 +249,11 @@ architect golden run gt-001 --mode design
 - `review` starts from the task's seed model; `design` starts from the brief alone.
 - `--kill-after attack` ends the worker process once the first attack phase has completed
   and starts a new one. The session must resume from its history.
+- `--kill-mode` says how the worker ends. `self` (the default without `--live`): the worker
+  ends itself. `external` (the default with `--live`): the runner kills the worker process
+  from outside, in the middle of whatever it is doing. The activity that was cut off stops
+  heartbeating, and Temporal hands it to the new worker within `temporal.heartbeat_seconds`
+  (`config/presets.yaml`, 30 s).
 - The runner starts its own worker process, so you do not need `architect worker` for it.
 
 Each run prints a scorecard and writes it as JSON: which planted flaws were caught and in
@@ -263,7 +268,11 @@ architect golden run gt-001 --mode design --live
 ```
 
 Live scorecards are written to `goldens/results/`. The runner approves a package whose gate
-is ALLOWED and rejects any other. It never signs a waiver.
+is ALLOWED and rejects any other. It never signs a waiver. With `--live`, `--kill-after
+attack` is an outside kill unless you pass `--kill-mode self`.
+
+A waiver signed by `approve-with-risks` covers one check on one element. If another element
+fails the same check later, the gate blocks on it.
 
 ## Where things are
 

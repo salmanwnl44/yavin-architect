@@ -587,6 +587,9 @@ class DesignSessionWorkflow:
             self._base() | extra,
             result_type=dict,
             start_to_close_timeout=ACTIVITY_TIMEOUT,
+            # every activity heartbeats, so one whose worker died is retried on another
+            # worker after this long instead of waiting out the whole timeout
+            heartbeat_timeout=timedelta(seconds=int(self.limits.get("heartbeat_seconds", 30))),
             retry_policy=RETRY,
         )
 

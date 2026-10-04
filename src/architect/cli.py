@@ -564,7 +564,8 @@ def _new_project(pool: ConnectionPool, args: argparse.Namespace) -> int:
 
 
 def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
-    """architect golden run TASK [--mode review|design] [--live] [--kill-after attack]."""
+    """architect golden run TASK [--mode review|design] [--live] [--kill-after attack]
+    [--kill-mode self|external]."""
     import asyncio
 
     from architect.golden import runner, scorecard
@@ -576,6 +577,7 @@ def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
                 mode=args.mode,
                 live=args.live,
                 kill_after=args.kill_after,
+                kill_mode=args.kill_mode,
                 dsn=args.database_url or database_url(),
                 address=args.address,
                 out=args.out,
@@ -825,6 +827,13 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         choices=["attack"],
         help="end the worker process after this phase and resume on a new one",
+    )
+    golden_run.add_argument(
+        "--kill-mode",
+        default=None,
+        choices=["self", "external"],
+        help="external: the runner kills the worker process from outside (default with "
+        "--live); self: the worker ends itself (default in mock mode)",
     )
     golden_run.add_argument("--out", type=Path, default=None, help="where to write the scorecard")
     golden_run.add_argument(
