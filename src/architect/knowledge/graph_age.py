@@ -7,6 +7,11 @@ whenever the projection's cursor has moved since: it is an index, like a vector 
 dropping it loses nothing. Vertices are `(:N {id})`; edges are `[:E {t, s, o, c}]` (edge
 type, the seq and ord that name the edge, the claim id or "").
 
+Every query runs on a connection of its own, closed when the query is done, never on the
+application's pool. AGE keeps per-session caches of graphs and labels, and a session that
+has dropped a graph can fail later, on an unrelated statement, with "label (relation) cache
+corrupted" (seen in CI on AGE 1.6). A session that ends with the query cannot.
+
 Traversal is breadth-first over one-hop Cypher expansions, so `neighbors` and `paths` here
 and the recursive CTEs of the SQL backend are two independent implementations, which is
 what the parity tests compare.
@@ -14,12 +19,16 @@ what the parity tests compare.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import re
+from collections.abc import Iterator
 from typing import Any
 
+import psycopg
 from psycopg import Connection
+from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from architect.knowledge.graph import (
@@ -76,6 +85,13 @@ class AgeGraphStore:
         self._pool = pool
 
     # ------------------------------------------------------------------ plumbing
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[Connection[dict[str, Any]]]:
+        """A connection for one query, with the pool's settings, closed afterwards (see the
+        module docstring for why AGE never runs on a pooled connection)."""
+        with psycopg.connect(self._pool.conninfo, row_factory=dict_row) as conn:
+            yield conn
+
     @staticmethod
     def _enter(conn: Connection[dict[str, Any]]) -> None:
         """Make AGE usable for the rest of this transaction: the library loaded, its catalog
@@ -154,7 +170,7 @@ class AgeGraphStore:
 
     def drop(self, project_id: str) -> None:
         """Remove the project's AGE graph (it is rebuilt on the next query)."""
-        with self._pool.connection() as conn, conn.transaction():
+        with self._session() as conn, conn.transaction():
             self._enter(conn)
             graph = self.graph_name(conn, project_id)
             if conn.execute(
@@ -213,7 +229,7 @@ class AgeGraphStore:
         self, project_id: str, node_id: str, depth: int = 1, edge_types: list[str] | None = None
     ) -> dict[str, Any]:
         check_depth(depth, MAX_NEIGHBOR_DEPTH, "depth")
-        with self._pool.connection() as conn, conn.transaction():
+        with self._session() as conn, conn.transaction():
             start = resolve(conn, project_id, node_id)
             self._enter(conn)
             graph = self._loaded(conn, project_id)
@@ -239,7 +255,7 @@ class AgeGraphStore:
         edge_types: list[str] | None = None,
     ) -> list[list[str]]:
         check_depth(max_depth, MAX_PATH_DEPTH, "max_depth")
-        with self._pool.connection() as conn, conn.transaction():
+        with self._session() as conn, conn.transaction():
             start, goal = resolve(conn, project_id, src), resolve(conn, project_id, dst)
             if start == goal:
                 return [[start]]
@@ -273,7 +289,7 @@ class AgeGraphStore:
         return sorted(back(goal))
 
     def subgraph(self, project_id: str, node_ids: list[str]) -> dict[str, Any]:
-        with self._pool.connection() as conn, conn.transaction():
+        with self._session() as conn, conn.transaction():
             wanted = sorted({resolve(conn, project_id, node_id) for node_id in node_ids})
             self._enter(conn)
             graph = self._loaded(conn, project_id)

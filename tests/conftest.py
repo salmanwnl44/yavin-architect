@@ -84,18 +84,23 @@ def dsn(admin: psycopg.Connection) -> Iterator[str]:
     schema = sql.Identifier(f"t_{uuid.uuid4().hex}")
     admin.execute(sql.SQL("CREATE SCHEMA {}").format(schema))
     yield make_conninfo(database_url(), options=f"-c search_path={schema.as_string()}")
-    # an Apache AGE graph is a schema of its own: drop the ones this test's projects loaded
+    # An Apache AGE graph is a schema of its own: drop the ones this test's projects loaded.
+    # On a connection that is closed right after, never on `admin`: a session that has
+    # dropped an AGE graph can fail on a later, unrelated statement.
     try:
         graphs = admin.execute(
             sql.SQL("SELECT graph FROM {}.kg_age_sync").format(schema)
         ).fetchall()
-        for (graph,) in graphs:
-            admin.execute(
-                "SELECT ag_catalog.drop_graph(name, true) FROM ag_catalog.ag_graph WHERE name = %s",
-                (graph,),
-            )
     except psycopg.Error:
-        pass  # no such table (the schema was never initialized) or no AGE here
+        graphs = []  # the schema was never initialized
+    if graphs:
+        with psycopg.connect(database_url(), autocommit=True) as age:
+            for (graph,) in graphs:
+                age.execute(
+                    "SELECT ag_catalog.drop_graph(name, true) FROM ag_catalog.ag_graph "
+                    "WHERE name = %s",
+                    (graph,),
+                )
     admin.execute(sql.SQL("DROP SCHEMA {} CASCADE").format(schema))
 
 
