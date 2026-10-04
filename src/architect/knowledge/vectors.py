@@ -229,6 +229,16 @@ class PgVectorIndex(_Store):
         with self._lock:
             if dim in self._ready:
                 return
+            # DDL only when something is missing: CREATE ... IF NOT EXISTS still takes a table
+            # lock that conflicts with writers, and two writers that each took it would
+            # deadlock on their first insert
+            present = conn.execute(
+                "SELECT to_regclass(%s) IS NOT NULL AND to_regclass(%s) IS NOT NULL AS yes",
+                (f"emb_pgvector_{int(dim)}", f"emb_pgvector_{int(dim)}_hnsw"),
+            ).fetchone()["yes"]
+            if present:
+                self._ready.add(dim)
+                return
             table = self._table(dim)
             conn.execute(
                 sql.SQL(

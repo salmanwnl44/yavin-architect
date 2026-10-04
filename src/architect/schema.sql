@@ -619,3 +619,11 @@ CREATE TABLE IF NOT EXISTS kg_age_sync (
     graph      text   NOT NULL,
     seq        bigint NOT NULL
 );
+
+-- What this schema was last brought up to: the sha256 of schema.sql. ensure_schema applies
+-- the DDL above only when it differs (or a table is missing), so a starting process takes no
+-- table locks on a schema that is already current.
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   text PRIMARY KEY,
+    value text NOT NULL
+);

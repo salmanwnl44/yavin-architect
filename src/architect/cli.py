@@ -712,7 +712,8 @@ def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
 
 
 def _init_db(pool: ConnectionPool, args: argparse.Namespace) -> int:
-    print("schema is up to date")  # ensure_schema already ran in main()
+    ensure_schema(pool, force=True)  # main() applies it only when it is not current
+    print("schema is up to date")
     return 0
 
 
