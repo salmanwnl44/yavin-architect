@@ -21,6 +21,7 @@ from architect.contracts import first_error, json_path, load_contracts
 from architect.gateway.cache import canonical as _canonical
 from architect.ingestion import grades
 from architect.ingestion.normalize import spo_key
+from architect.knowledge.graph import ABOUT, claim_label, entity_node
 from architect.model_fold import Model, PatchError, apply_patch, child_of, empty_model
 
 Event = dict[str, Any]
@@ -47,6 +48,10 @@ PROJ_TABLES = (
     "proj_claim_proposals",
     "proj_experiments",
     "proj_session_timeline",
+    "proj_graph_nodes",
+    "proj_graph_edges",
+    "proj_entity_merges",
+    "proj_entity_alias",
 )
 
 # §7 refutation propagation: a claim in one of these statuses compromises what derives from it.
@@ -104,9 +109,117 @@ class _Fold:
         )
         self._edges += 1
 
+    # the knowledge graph (M8)
+    def node(
+        self,
+        node_id: str,
+        node_type: str,
+        label: str,
+        entity_type: str | None = None,
+        origin: str = "event",
+    ) -> None:
+        """A graph node, introduced by this event unless an earlier one already did."""
+        self.cur.execute(
+            "INSERT INTO proj_graph_nodes (project_id, node_id, node_type, entity_type, label, "
+            "origin, seq) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (project_id, node_id) DO NOTHING",
+            (self.pid, node_id, node_type, entity_type, label, origin, self.seq),
+        )
+
+    def claim_edge(self, edge_type: str, src: str, dst: str, claim_id: str) -> None:
+        """An edge derived from a claim. ord continues the event's edge counter, so (seq, ord)
+        names one edge across proj_edges and proj_graph_edges."""
+        self.cur.execute(
+            "INSERT INTO proj_graph_edges (project_id, seq, ord, edge_type, src, dst, claim_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (self.pid, self.seq, self._edges, edge_type, src, dst, claim_id),
+        )
+        self._edges += 1
+
+    def _claim_graph(self, claim_id: str, claim: dict[str, Any]) -> None:
+        self.node(claim_id, "claim", claim_label(claim))
+        ends = [entity_node(claim["subject"]), entity_node(claim["object"])]
+        for end in ends:
+            if end is not None:
+                node_id, node_type, entity_type, label = end
+                self.node(node_id, node_type, label, entity_type)
+        subject, obj = ends
+        if subject is not None and obj is not None:
+            self.claim_edge(claim["predicate"], subject[0], obj[0], claim_id)
+        for node_id in dict.fromkeys(end[0] for end in ends if end is not None):
+            self.claim_edge(ABOUT, claim_id, node_id, claim_id)
+
+    def _model_graph(self, model: Model) -> None:
+        """The elements of the head model are nodes; the version just stored is the head."""
+        self.cur.execute(
+            "DELETE FROM proj_graph_nodes WHERE project_id = %s AND origin = 'model'", (self.pid,)
+        )
+        for element_type, elements in model.get("elements", {}).items():
+            node_type = "requirement" if element_type == "requirements" else "element"
+            for element in elements:
+                if "id" in element:
+                    label = str(element.get("name") or element["id"])
+                    self.node(element["id"], node_type, label, element_type, origin="model")
+
+    def entity_merged(self) -> None:
+        p = self.payload
+        self.cur.execute(
+            "INSERT INTO proj_entity_merges (project_id, seq, event_id, kept_id, merged_ids, "
+            "method, reverted_seq) VALUES (%s, %s, %s, %s, %s, %s, NULL)",
+            (
+                self.pid,
+                self.seq,
+                self.event["event_id"],
+                p["kept_id"],
+                p["merged_ids"],
+                p["method"],
+            ),
+        )
+        self._recompute_aliases()
+
+    def entity_merge_reverted(self) -> None:
+        self.cur.execute(
+            "UPDATE proj_entity_merges SET reverted_seq = %s WHERE project_id = %s "
+            "AND event_id = %s AND reverted_seq IS NULL",
+            (self.seq, self.pid, self.payload["merge_event"]),
+        )
+        self._recompute_aliases()
+
+    def _recompute_aliases(self) -> None:
+        """entity -> kept id, from the merges that stand, in commit order. A merge into an
+        entity that was itself merged away follows it to where it went."""
+        merges = self.cur.execute(
+            "SELECT kept_id, merged_ids FROM proj_entity_merges WHERE project_id = %s "
+            "AND reverted_seq IS NULL ORDER BY seq",
+            (self.pid,),
+        ).fetchall()
+        parent: dict[str, str] = {}
+
+        def find(node: str) -> str:
+            while parent.get(node, node) != node:
+                node = parent[node]
+            return node
+
+        for merge in merges:
+            root = find(merge["kept_id"])
+            for merged in merge["merged_ids"]:
+                other = find(merged)
+                if other != root:
+                    parent[other] = root
+        self.cur.execute("DELETE FROM proj_entity_alias WHERE project_id = %s", (self.pid,))
+        for entity in sorted(parent):
+            root = find(entity)
+            if root != entity:
+                self.cur.execute(
+                    "INSERT INTO proj_entity_alias (project_id, entity_id, canonical_id) "
+                    "VALUES (%s, %s, %s)",
+                    (self.pid, entity, root),
+                )
+
     # sources
     def source_ingested(self) -> None:
         p = self.payload
+        self.node(p["source_id"], "source", p["uri"])
         self.cur.execute(
             "INSERT INTO proj_sources (project_id, source_id, uri, content_hash, media_type, "
             "license, taint_origin, seq) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
@@ -169,6 +282,7 @@ class _Fold:
             self.edge("DERIVED_FROM", claim_id, premise)
         if "supersedes" in claim:
             self.edge("SUPERSEDES", claim_id, claim["supersedes"])
+        self._claim_graph(claim_id, claim)
         if derived_from or claim["status"] in COMPROMISING_STATUSES:
             self._recompute_compromised()
         self._recompute_grades()
@@ -320,6 +434,7 @@ class _Fold:
         for link_type, (edge_type, src, dst) in MODEL_LINK_EDGES.items():
             for link in model["links"].get(link_type, []):
                 self.edge(edge_type, link[src], link[dst], version_id)
+        self._model_graph(model)
 
     def _where(self) -> str:
         return f"seq {self.seq} ({self.event['type']})"
@@ -365,6 +480,7 @@ class _Fold:
         )
         for claim_id in decision["evidence_claims"]:
             self.edge("DECISION_EVIDENCE", adr_id, claim_id)
+        self.node(adr_id, "adr", str(decision.get("title") or adr_id))
 
     def waiver_signed(self) -> None:
         p = self.payload
@@ -475,6 +591,8 @@ HANDLERS = {
     "session.phase_changed": _Fold.session_phase_changed,
     "session.checkpoint": _Fold.session_checkpoint,
     "budget.updated": _Fold.budget_updated,
+    "entity.merged": _Fold.entity_merged,
+    "entity.merge_reverted": _Fold.entity_merge_reverted,
 }
 
 # Committed events with no read model yet. Listed so a new event type is a decision, not
@@ -482,8 +600,6 @@ HANDLERS = {
 NOT_PROJECTED = frozenset(
     {
         "model.patch_proposed",
-        "entity.merged",
-        "entity.merge_reverted",
     }
 )
 

@@ -403,6 +403,13 @@ class Pipeline:
             seen.add(claim["id"])
             reason = agreement(candidate, b_candidates)
             committing.propose(self._pool, project_id, claim)
+            # the claim carries only the locator; its quote is part of its searchable text (M8)
+            with self._pool.connection() as conn:
+                conn.execute(
+                    "INSERT INTO ing_claim_quotes (project_id, claim_id, quote) "
+                    "VALUES (%s, %s, %s) ON CONFLICT (project_id, claim_id) DO NOTHING",
+                    (project_id, claim["id"], candidate.quote),
+                )
             if reason is None:
                 committing.commit_claim(self._pool, project_id, claim)
                 agreed += 1
