@@ -102,19 +102,19 @@ def seed_ops(seed: Any) -> list[dict[str, Any]]:
 HEARTBEAT_THREAD = "session-activity-heartbeat"
 
 
-def _heartbeat_until(done: threading.Event) -> None:
-    """Heartbeat the current activity from a helper thread until `done` is set, at a third
-    of its heartbeat timeout. While the worker lives the server keeps hearing from the
-    activity, however long a model call takes; when the worker process dies the beats stop
-    and the server retries the activity elsewhere. No-op outside an activity or when the
-    activity has no heartbeat timeout."""
+def _heartbeat_until(done: threading.Event, every_s: float = 10.0) -> None:
+    """Heartbeat the current activity from a helper thread until `done` is set, every
+    `every_s` seconds (and never less often than a third of its heartbeat timeout). While
+    the worker lives the server keeps hearing from the activity, however long a model call
+    takes; when the worker process dies the beats stop and the server retries the activity
+    elsewhere. No-op outside an activity or when the activity has no heartbeat timeout."""
     try:
         timeout = activity.info().heartbeat_timeout
     except RuntimeError:
         return
     if not timeout:
         return
-    interval = max(0.2, timeout.total_seconds() / 3)
+    interval = max(0.2, min(every_s, timeout.total_seconds() / 3))
 
     def beat() -> None:
         while not done.wait(interval):
@@ -160,8 +160,9 @@ class SessionActivities:
     def _wrap(self, name: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable:
         def run(args: dict[str, Any]) -> dict[str, Any]:
             alive = threading.Event()
-            _heartbeat_until(alive)
+            _heartbeat_until(alive, self._config.heartbeat_interval_seconds)
             try:
+                self._abandon_lost_calls(args)
                 if self.before_activity is not None:
                     self.before_activity(name, args)
                 result = fn(args)
@@ -176,6 +177,19 @@ class SessionActivities:
         return activity.defn(name=name)(run)
 
     # ------------------------------------------------------------------ helpers
+    def _abandon_lost_calls(self, args: dict[str, Any]) -> None:
+        """On a RETRY of an activity, close the model calls of this session that were
+        started and never closed: the attempt that made them is gone (its worker died), so
+        nobody else will. Their reservations stay charged (gateway.sweep_abandoned). The
+        retry is the evidence, so no minimum age applies here; a call that was only slow is
+        put right when it does finish."""
+        try:
+            retried = activity.info().attempt > 1
+        except RuntimeError:  # called directly, outside an activity
+            return
+        if retried and args.get("session_id"):
+            self._gateway.sweep_abandoned(scope={"session": args["session_id"]}, older_than_s=0)
+
     def _catch_up(self, project_id: str) -> None:
         Projector(self._pool).catch_up(project_id)
 
@@ -385,7 +399,7 @@ class SessionActivities:
         project_id, session_id = args["project_id"], args["session_id"]
         brief: str = args["brief"]
         brief_source = args["brief_source_id"]
-        ranked = rank_claims(self._pool, project_id, brief)
+        ranked = rank_claims(self._pool, project_id, brief, self._gateway)
         compiled = compile(
             self._pool,
             CompileTask(
@@ -597,7 +611,7 @@ class SessionActivities:
     # ------------------------------------------------------------------ research
     def _research(self, args: dict[str, Any]) -> dict[str, Any]:
         self._catch_up(args["project_id"])
-        ranked = rank_claims(self._pool, args["project_id"], args["brief"])
+        ranked = rank_claims(self._pool, args["project_id"], args["brief"], self._gateway)
         return {
             "claim_ids": [row["claim_id"] for row in ranked],
             "scores": {row["claim_id"]: row["score"] for row in ranked},

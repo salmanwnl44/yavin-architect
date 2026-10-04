@@ -49,8 +49,12 @@ Do not change the contracts.
 8. **One path to any model.** Every LLM call goes through `architect.gateway`. Only
    `gateway/providers/` imports an LLM SDK or speaks HTTP to a model server, and only
    `config/models.yaml` names a model id, a family or a price (`tests/test_gateway.py`
-   enforces both). Every attempt is recorded in the append-only `gw_calls` log; keys are
-   read from the environment and never stored, logged or raised.
+   enforces both). Every attempt is recorded in the append-only `gw_calls` log, written
+   AHEAD: a `started` row with the reservation before the provider is called, then the row
+   that closes it. A started row nothing closed is swept as `abandoned` and its reserved
+   cost stays charged: spend may over-count, never under-count. Embeddings take the same
+   path (`Gateway.embed`). Keys are read from the environment and never stored, logged or
+   raised.
 9. **Models propose, the pipeline decides.** In ingestion (`architect.ingestion`) a model
    returns only subject, predicate, object, magnitude, conditions and a verbatim quote; the
    pipeline sets status, evidence, taint, provenance and ids, drops any candidate whose quote
@@ -77,6 +81,15 @@ Do not change the contracts.
     BLOCKED package, `approve_with_risks` without a reason) is refused with a recorded
     reason. Every outcome but `cancelled` ends at a human gate with its package.
     `approve_with_risks` is the only path that signs a waiver, and it signs as the human.
+13. **Retrieval is claim-first, and the knowledge plane is derived.** Search returns claims
+    with status, grade, conditions, taint and evidence locators, never bare text
+    (`tests/test_m8_retrieval.py` enforces it). The graph is a projection (`proj_graph_*`,
+    `proj_entity_*`, folded only by the projector); an edge without provenance is
+    un-storable. The search index, the vectors, the communities table, the AGE graph and
+    the pgvector table are indexes: dropping them loses nothing. Each of GraphStore and
+    VectorIndex has two backends that must give identical answers (the parity tests), so the
+    extension-free fallback is never a second-class path. Entity merges and community
+    summaries are events through the Arbiter; `architect.knowledge` imports no provider SDK.
 
 ## Layout
 
@@ -107,6 +120,14 @@ Do not change the contracts.
   messages, `ag_messages`); `compiler.py` the Context Compiler; `linter.py` the requirement
   linter; `worker.py` the Temporal worker; `service.py` the client side (start, signal,
   query, the `ses_sessions` read model); `config/presets.yaml` the presets.
+- `src/architect/knowledge/`: the knowledge plane (M8). `graph.py` what the graph is, the
+  GraphStore interface and its SQL backend; `graph_age.py` the Apache AGE backend;
+  `vectors.py` the VectorIndex interface, exact and pgvector; `index.py` the search index
+  (claim text, entity names, embeddings) that follows the read models; `retrieval.py` hybrid
+  search and RRF; `resolution.py` entity resolution; `communities.py` Leiden and summaries;
+  `plane.py` the one object the API, the CLI and the compiler use; `config/knowledge.yaml`
+  the settings. The graph's fold is in `projections.py`; embeddings are in
+  `gateway/embedding.py`. `ci/knowledge-postgres/` builds Postgres 16 with AGE and pgvector.
 - `src/architect/console.py`: the session snapshot and its pure rendering (`session watch`),
   and the why-trace formatter. `src/architect/modeldiff.py`: the structural diff between two
   model versions, pure.
@@ -117,13 +138,16 @@ Do not change the contracts.
   `results/` for live scorecards.
 - `docs/getting-started.md`: how to run all of it, on Windows without Docker and on Linux.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
-- `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
+- `src/architect/schema.sql`: all DDL, idempotent. Applied on startup only when the schema is
+  not current (a table is missing, or the file's hash in `schema_meta` differs), so a
+  starting process takes no table locks; `architect init-db` forces it.
 
 ## Commands
 
 ```
 pip install -e ".[dev]"
-docker compose up -d postgres            # or any Postgres 16; set ARCHITECT_DATABASE_URL
+docker compose up -d postgres            # Postgres 16 with AGE and pgvector (built from ci/);
+                                         # any Postgres 16 works: set ARCHITECT_DATABASE_URL
 ruff check .
 pytest
 docker compose --profile sessions up -d  # Temporal dev server for sessions; then:
@@ -135,6 +159,10 @@ architect golden run gt-001 --mode review --kill-after attack   # mock; add --li
 The session tests run on Temporal's time-skipping test environment (downloaded on first
 use); two of them need a real dev server and start one themselves unless
 `ARCHITECT_TEMPORAL_ADDRESS` names one, as CI does.
+
+Tests marked `needs_age` or `needs_pgvector` are deselected (not skipped) when the test
+database lacks the extension, and `fastembed_smoke` when the optional package is absent; CI
+runs the suite on the knowledge image and on a plain Postgres, plus the smoke job.
 
 Live provider tests are marked `live` and deselected by default; `pytest -m live -v` with a
 key in the shell runs them. The app reads its key from `ARCHITECT_ANTHROPIC_API_KEY`, falling
@@ -153,6 +181,9 @@ Tests create a throwaway schema per test inside the database named by
 - Adding a check means: a `c0NN.py` module with `CHECK_ID`, `USES` and `check`, its entry in
   `checks/catalog.json` and in `REGISTRY`, and unit tests for its pass, fail and empty cases.
 - After a PR merges, delete its remote branch — don't ask.
+- Adding a GraphStore or VectorIndex capability means: both backends, and a parity test.
+- No DDL on a hot path: `CREATE ... IF NOT EXISTS` and `ALTER TABLE` still lock the table.
+  Schema changes go in `schema.sql`; anything created lazily checks the catalog first.
 - Adding an activity means: an idempotency scheme derived from (session, phase, round, step),
   a result the workflow can act on without I/O, and a test in which it is retried or replayed.
 - A flaky test is a defect, in the test or in the code. Reproduce it in a loop with the
@@ -161,8 +192,8 @@ Tests create a throwaway schema per test inside the database named by
   on a state that holds until the test acts; it never waits on a transient state and never
   sleeps to see what happens.
 - Out of scope until their milestone: the alternatives tournament (K > 1, M11), AI adversaries
-  (M10), web research and the web and arXiv connectors, entity resolution beyond exact slugs,
-  a graph database, vector search, UI, auth, multi-tenancy.
+  (M10), web research and the web and arXiv connectors, discovery detectors (contradictions,
+  gaps: M9), UI, auth, multi-tenancy.
 
 ### Module report (mandatory)
 Every session ends with exactly this block and nothing after it:

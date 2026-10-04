@@ -57,6 +57,28 @@ def default_out(task_id: str, mode: str, live: bool) -> Path:
     return Path("data") / "golden" / f"{day}-{task_id}-{mode}-mock.json"
 
 
+def kill_process_tree(process: subprocess.Popen) -> int:
+    """Kill a child process and everything it started, from outside, with no chance to clean
+    up: `taskkill /F /T` on Windows (where the interpreter runs behind a virtualenv's launcher
+    process), SIGKILL to its process group elsewhere (start it with start_new_session=True;
+    a child that shares our own group is killed alone). Returns the exit code."""
+    pid = process.pid
+    if os.name == "nt":
+        subprocess.run(  # noqa: S603 - a fixed system command and our own child's pid
+            ["taskkill", "/F", "/T", "/PID", str(pid)],  # noqa: S607
+            capture_output=True,
+            check=False,
+        )
+    else:
+        with contextlib.suppress(ProcessLookupError):
+            group = os.getpgid(pid)
+            if group == os.getpgid(0):
+                process.kill()
+            else:
+                os.killpg(group, signal.SIGKILL)
+    return process.wait(timeout=60)
+
+
 class _Worker:
     def __init__(self, process: subprocess.Popen, log_path: Path, log_file: Any) -> None:
         self.process, self.log_path, self._log_file = process, log_path, log_file
@@ -76,20 +98,9 @@ class _Worker:
             raise GoldenError(f"the worker did not start: {line!r}\n{self.stderr_tail()}")
 
     def kill_hard(self) -> int:
-        """Terminate the worker from outside, with no chance to clean up, and everything it
-        started: SIGKILL to its process group, or `taskkill /F /T` on Windows (where the
-        interpreter runs behind a launcher process). Returns the exit code."""
-        pid = self.process.pid
-        if os.name == "nt":
-            subprocess.run(  # noqa: S603 - a fixed system command and our own child's pid
-                ["taskkill", "/F", "/T", "/PID", str(pid)],  # noqa: S607
-                capture_output=True,
-                check=False,
-            )
-        else:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-        return self.process.wait(timeout=60)
+        """Terminate the worker from outside, with no chance to clean up. Returns the exit
+        code."""
+        return kill_process_tree(self.process)
 
     def stop(self) -> None:
         """End the worker: close its stdin (it exits on that), and kill it if it does not."""

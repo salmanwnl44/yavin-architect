@@ -34,4 +34,6 @@ checkpoint_minutes: 5             # a session.checkpoint at least this often whi
 
 temporal:
   task_queue: architect-sessions
-  heartbeat_seconds: 30           # an activity whose worker died is retried after this
+  heartbeat_interval_seconds: 10  # every activity beats this often while it runs
+  heartbeat_seconds: 30           # the heartbeat timeout: an activity whose worker died
+                                  # is retried after this long without a beat

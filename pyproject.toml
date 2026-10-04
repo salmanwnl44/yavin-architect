@@ -23,9 +23,17 @@ dependencies = [
     "rich>=13",
     "temporalio>=1.34",
     "uvicorn>=0.30",
+    # the knowledge plane (M8): exact vector search, Leiden communities
+    "numpy>=1.26",
+    "python-igraph>=0.11",
+    "leidenalg>=0.10",
 ]
 
 [project.optional-dependencies]
+# local CPU embeddings (ONNX): the on-prem default of the embedding tier
+embeddings = [
+    "fastembed>=0.4",
+]
 dev = [
     "httpx2",
     "pytest>=8",
@@ -45,6 +53,9 @@ addopts = "-ra -m \"not live\""
 markers = [
     "live: calls a real model provider with a real key; run with: pytest -m live -v",
     "live_openai_compat: needs an OpenAI-compatible server; deselected unless OPENAI_COMPAT_BASE_URL is set",
+    "needs_age: needs the Apache AGE extension in the test database; deselected without it",
+    "needs_pgvector: needs the pgvector extension in the test database; deselected without it",
+    "fastembed_smoke: embeds with the optional fastembed package; deselected unless it is installed",
 ]
 
 [tool.ruff]
@@ -58,5 +69,6 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.ruff.lint.isort]
 known-first-party = [
-    "architect", "builders", "conftest", "ingest_fixtures", "replay_reference", "session_fixtures",
+    "architect", "builders", "conftest", "ingest_fixtures", "knowledge_fixtures", "replay_reference",
+    "session_fixtures", "test_m8_graph", "test_projections",
 ]

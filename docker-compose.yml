@@ -1,6 +1,9 @@
 services:
+  # Postgres 16 with Apache AGE and pgvector, the knowledge plane's backends (module M8).
+  # A plain Postgres 16 works too: the application then uses its SQL and exact fallbacks.
   postgres:
-    image: postgres:16
+    build: ci/knowledge-postgres
+    image: yavin-architect-postgres:16-age-pgvector
     environment:
       POSTGRES_USER: architect
       POSTGRES_PASSWORD: architect

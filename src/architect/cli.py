@@ -24,6 +24,8 @@ from architect.ingestion.extract import PIPELINE_VERSION
 from architect.ingestion.objectstore import LocalObjectStore
 from architect.ingestion.pipeline import Pipeline
 from architect.ingestion.sources import Ingestor
+from architect.knowledge import resolution
+from architect.knowledge.plane import KnowledgePlane
 from architect.projections import ProjectionError
 from architect.projector import DEFAULT_BATCH, DEFAULT_POLL_SECONDS, Projector
 from architect.rebuild import rebuild_state
@@ -186,7 +188,7 @@ def _gate(pool: ConnectionPool, args: argparse.Namespace) -> int:
 
 
 def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
-    """architect gateway call | spend | calls."""
+    """architect gateway call | spend | calls | sweep."""
     gateway = Gateway(pool, providers=default_providers())
     if args.gateway_command == "call":
         schema = json.loads(Path(args.schema).read_text(encoding="utf-8")) if args.schema else None
@@ -212,10 +214,126 @@ def _gateway(pool: ConnectionPool, args: argparse.Namespace) -> int:
         limits = gateway.limits({"session": args.session})
         print(json.dumps({"spend": spend, "limits": limits}, indent=2, sort_keys=True, default=str))
         return 0
+    if args.gateway_command == "sweep":
+        scope = {"session": args.session} if args.session else None
+        abandoned = gateway.sweep_abandoned(scope=scope, older_than_s=args.older_than)
+        print(json.dumps({"abandoned": abandoned}, indent=2))
+        return 0
     from architect.gateway.recorder import recent
 
     for row in recent(pool, args.limit):
         print(json.dumps(row, sort_keys=True, default=str))
+    return 0
+
+
+def _plane(pool: ConnectionPool) -> KnowledgePlane:
+    return KnowledgePlane(pool, Gateway(pool, providers=default_providers()))
+
+
+def _search(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect search --project P "query" [-k N] [--grade G] [--scope S] [--json]."""
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    found = _plane(pool).search(
+        args.project,
+        args.query,
+        k=args.k,
+        grades=args.grade,
+        taints=args.taint,
+        entities=args.entity,
+        scope=args.scope,
+    )
+    if args.json:
+        print(json.dumps(found, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"{len(found['hits'])} hits  scope {found['scope']}  signals "
+        f"{', '.join(found['signals']) or '-'}  embeddings {found['embedding_model'] or 'none'}"
+    )
+    for hit in found["hits"]:
+        triple = " ".join(
+            str(ref.get("id", ref.get("literal")))
+            for ref in (hit["subject"], {"id": hit["predicate"]}, hit["object"])
+        )
+        magnitude = hit["magnitude"]
+        number = f" = {magnitude['value']:g} {magnitude['unit']}" if magnitude else ""
+        print(
+            f"{hit['claim_id']} [{hit['status']} {hit['grade']} {hit['taint']['origin']}] "
+            f"{triple[:160]}{number}  via {'+'.join(hit['signals'])}"
+        )
+    return 0
+
+
+def _graph(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect graph counts | neighbors NODE | path FROM TO."""
+    if not _project_known(pool, args.project):
+        return 1
+    Projector(pool).catch_up(args.project)
+    plane = _plane(pool)
+    try:
+        if args.graph_command == "counts":
+            out = plane.counts(args.project) | {"backends": plane.backends()}
+        elif args.graph_command == "neighbors":
+            out = plane.neighbors(
+                args.project, args.node, depth=args.depth, edge_types=args.edge_type
+            )
+        else:
+            paths = plane.paths(
+                args.project,
+                args.src,
+                args.dst,
+                max_depth=args.max_depth,
+                edge_types=args.edge_type,
+            )
+            out = {"from": args.src, "to": args.dst, "paths": paths}
+    except ValueError as error:
+        print(f"graph: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(out, indent=2, sort_keys=True))
+    return 0
+
+
+def _resolve_entities(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect resolve-entities --project P [--revert EVENT --signer NAME]."""
+    if not _project_known(pool, args.project):
+        return 1
+    try:
+        if args.revert:
+            if not args.signer:
+                print("--revert needs --signer: a merge is undone by a person", file=sys.stderr)
+                return 1
+            event = resolution.revert_merge(pool, args.project, args.revert, signer=args.signer)
+            print(json.dumps({"reverted": args.revert, "event_id": event["event_id"]}, indent=2))
+            return 0
+        report = _plane(pool).resolve_entities(args.project)
+    except (Rejection, GatewayError, RuntimeError) as error:
+        print(f"entity resolution stopped: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0
+
+
+def _communities(pool: ConnectionPool, args: argparse.Namespace) -> int:
+    """architect communities rebuild | list --project P [--level N]."""
+    if not _project_known(pool, args.project):
+        return 1
+    plane = _plane(pool)
+    if args.communities_command == "rebuild":
+        try:
+            result = plane.rebuild_communities(args.project)
+        except (Rejection, GatewayError, RuntimeError) as error:
+            print(f"communities stopped: {error}", file=sys.stderr)
+            return 1
+        summary = {
+            "communities": len(result["communities"]),
+            "summaries_written": result["written"],
+            "summaries_kept": result["kept"],
+        }
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
+    Projector(pool).catch_up(args.project)
+    print(json.dumps(plane.communities(args.project, args.level), indent=2, sort_keys=True))
     return 0
 
 
@@ -594,7 +712,8 @@ def _golden(pool: ConnectionPool, args: argparse.Namespace) -> int:
 
 
 def _init_db(pool: ConnectionPool, args: argparse.Namespace) -> int:
-    print("schema is up to date")  # ensure_schema already ran in main()
+    ensure_schema(pool, force=True)  # main() applies it only when it is not current
+    print("schema is up to date")
     return 0
 
 
@@ -681,6 +800,13 @@ def _parser() -> argparse.ArgumentParser:
     spend.add_argument("--session", required=True)
     calls = gateway_sub.add_parser("calls", help="the most recent calls in the call log")
     calls.add_argument("--limit", type=int, default=20)
+    sweep = gateway_sub.add_parser(
+        "sweep", help="close calls that were started and never recorded; their cost stays charged"
+    )
+    sweep.add_argument("--session", default=None, help="only this session's calls")
+    sweep.add_argument(
+        "--older-than", type=float, default=None, help="seconds (default: abandon_after_s)"
+    )
     gateway.set_defaults(run=_gateway)
 
     ingest_source = sub.add_parser("ingest-source", help="ingest a file, a PDF or a git repository")
@@ -714,6 +840,55 @@ def _parser() -> argparse.ArgumentParser:
         "--grade", default=None, choices=["quarantined", "unverified", "design_grade"]
     )
     claims.set_defaults(run=_claims)
+
+    search = sub.add_parser("search", help="hybrid, claim-first search over a project")
+    search.add_argument("--project", required=True)
+    search.add_argument("query")
+    search.add_argument("-k", type=int, default=20)
+    search.add_argument(
+        "--grade", action="append", choices=["quarantined", "unverified", "design_grade"]
+    )
+    search.add_argument("--taint", action="append", help="only claims of this taint origin")
+    search.add_argument("--entity", action="append", help="only claims about this entity id")
+    search.add_argument("--scope", default="auto", choices=["auto", "local", "global"])
+    search.add_argument("--json", action="store_true", help="the full result as JSON")
+    search.set_defaults(run=_search)
+
+    graph = sub.add_parser("graph", help="the knowledge graph: counts, neighbors, paths")
+    graph_sub = graph.add_subparsers(dest="graph_command", required=True)
+    graph_counts = graph_sub.add_parser("counts", help="nodes and edges by type; the backends")
+    graph_counts.add_argument("--project", required=True)
+    neighbors = graph_sub.add_parser("neighbors", help="the nodes within a few edges of a node")
+    neighbors.add_argument("--project", required=True)
+    neighbors.add_argument("node")
+    neighbors.add_argument("--depth", type=int, default=1)
+    neighbors.add_argument("--edge-type", action="append")
+    path = graph_sub.add_parser("path", help="the shortest paths between two nodes")
+    path.add_argument("--project", required=True)
+    path.add_argument("src")
+    path.add_argument("dst")
+    path.add_argument("--max-depth", type=int, default=4)
+    path.add_argument("--edge-type", action="append")
+    graph.set_defaults(run=_graph)
+
+    resolve = sub.add_parser(
+        "resolve-entities", help="merge entities that are one thing under two names"
+    )
+    resolve.add_argument("--project", required=True)
+    resolve.add_argument("--revert", default=None, help="undo this entity.merged event instead")
+    resolve.add_argument("--signer", default=None, help="who undoes it (with --revert)")
+    resolve.set_defaults(run=_resolve_entities)
+
+    communities = sub.add_parser("communities", help="the themes of the graph and their summaries")
+    communities_sub = communities.add_subparsers(dest="communities_command", required=True)
+    communities_rebuild = communities_sub.add_parser(
+        "rebuild", help="detect communities and summarize the new or changed ones"
+    )
+    communities_rebuild.add_argument("--project", required=True)
+    communities_list = communities_sub.add_parser("list", help="the current communities")
+    communities_list.add_argument("--project", required=True)
+    communities_list.add_argument("--level", type=int, default=None, choices=[0, 1])
+    communities.set_defaults(run=_communities)
 
     worker = sub.add_parser("worker", help="run the Temporal worker for design sessions")
     worker.add_argument(

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
 from architect.gateway.errors import ProviderError
-from architect.gateway.providers.base import ProviderCall, ProviderResult
+from architect.gateway.providers.base import EmbedResult, ProviderCall, ProviderResult
+
+_TOKEN = re.compile(r"[a-z0-9]+")
 
 
 def prompt_hash_of(call: ProviderCall) -> str:
@@ -67,6 +71,14 @@ class MockProvider:
         self.by_hash: dict[str, deque[Scripted | Failure]] = {}
         self.calls: list[ProviderCall] = []
         self.fail_if_called = False
+        # embeddings: every batch asked for, scripted vectors by exact text, words that mean
+        # the same thing (word -> concept), and whether only known concepts count
+        self.embed_calls: list[list[str]] = []
+        self.vectors: dict[str, list[float]] = {}
+        self.concepts: dict[str, str] = {}
+        self.known_concepts_only = False
+        self.embed_failures: deque[Failure] = deque()
+        self._basis: dict[tuple[str, int], list[float]] = {}
 
     # scripting
     def enqueue(self, *items: Scripted | Failure | str | dict) -> None:
@@ -107,6 +119,50 @@ class MockProvider:
         if isinstance(item, Failure):
             item.raise_(self.name, call.model)
         return item.result()
+
+    # embeddings
+    def embed(self, model: str, texts: list[str], dim: int | None = None) -> EmbedResult:
+        """Deterministic vectors: a scripted one for a scripted text, else the normalized sum
+        of one fixed pseudo-random direction per word, so texts that share words (or, through
+        `concepts`, meanings) are close. No model, the same on every machine."""
+        if self.fail_if_called:
+            raise AssertionError("the mock provider was asked to embed, and this test forbids it")
+        self.embed_calls.append(list(texts))
+        if self.embed_failures:
+            self.embed_failures.popleft().raise_(self.name, model)
+        size = dim or 64
+        return EmbedResult(
+            vectors=[self.embedding_of(text, size) for text in texts],
+            tokens=sum(max(1, len(text) // 4) for text in texts),
+        )
+
+    def embedding_of(self, text: str, dim: int) -> list[float]:
+        if text in self.vectors:
+            return list(self.vectors[text])
+        total = [0.0] * dim
+        for word in _TOKEN.findall(text.lower()):
+            concept = self.concepts.get(word)
+            if concept is None:
+                if self.known_concepts_only:
+                    continue
+                concept = word
+            for i, x in enumerate(self._direction(concept, dim)):
+                total[i] += x
+        norm = math.sqrt(sum(x * x for x in total))
+        return [x / norm for x in total] if norm else total
+
+    def _direction(self, concept: str, dim: int) -> list[float]:
+        """A fixed direction for a concept: sha256 in counter mode, bytes mapped to [-1, 1)."""
+        key = (concept, dim)
+        if key not in self._basis:
+            values: list[float] = []
+            counter = 0
+            while len(values) < dim:
+                block = hashlib.sha256(f"{concept}\x1f{counter}".encode()).digest()
+                values += [b / 127.5 - 1.0 for b in block]
+                counter += 1
+            self._basis[key] = values[:dim]
+        return self._basis[key]
 
     @staticmethod
     def default_text(call: ProviderCall) -> str:

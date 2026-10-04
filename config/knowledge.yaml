@@ -1,0 +1,44 @@
+# The knowledge plane (module M8): graph, entity resolution, embeddings, retrieval, communities.
+# No model id appears here: the embedding model is the `embedding` tier of config/models.yaml.
+
+graph:
+  backend: auto            # auto | sql | age. auto: Apache AGE when the extension is
+                           # installed, else recursive SQL over the projection tables.
+  max_neighbor_depth: 3
+  max_path_depth: 6
+
+vectors:
+  backend: auto            # auto | pgvector | exact. auto: pgvector when the extension is
+                           # installed, else exact cosine in numpy over emb_vectors.
+  hnsw:
+    m: 16
+    ef_construction: 64
+    ef_search: 100
+
+embedding:
+  tier: embedding
+  batch_size: 64
+
+resolution:                # entity resolution (spec §9-4)
+  high: 0.92               # cosine at or above: merge automatically (method embedding)
+  low: 0.80                # between low and high: ask a model (method llm_adjudicated)
+  max_edit_distance: 2     # blocking: slugs this close are candidates
+  context_predicates: 3    # predicates embedded with an entity's name
+  adjudicate_tier: tier-cheap
+  adjudicate_max_tokens: 200
+
+retrieval:
+  k: 20
+  rrf_k: 60                # Reciprocal Rank Fusion: score = sum over signals of 1 / (rrf_k + rank)
+  candidates: 50           # how many each signal contributes before fusion
+  entity_matches: 5        # entities a query may match for the graph expansion
+  entity_similarity: 0.60  # an entity matches by meaning at or above this cosine
+  default_grades: [design_grade, unverified]
+
+communities:               # GraphRAG-style: Leiden over the entity graph, one summary each
+  seed: 7
+  resolutions: [1.0, 0.5]  # level 0 (fine) and level 1 (coarse, over level 0's communities)
+  min_size: 2              # smaller communities get no summary
+  top_claims: 12           # the claims a summary is written from
+  summary_tier: tier-mid
+  summary_max_tokens: 400

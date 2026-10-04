@@ -5,26 +5,44 @@ on:
   pull_request:
 
 jobs:
+  # The whole suite, twice: on Postgres 16 with Apache AGE and pgvector (the knowledge plane's
+  # real backends, and the parity tests of each against its fallback), and on a plain
+  # Postgres 16 (the fallbacks alone: SQL graph store, exact vector index).
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: architect
-          POSTGRES_PASSWORD: architect
-          POSTGRES_DB: architect
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U architect -d architect"
-          --health-interval 2s
-          --health-timeout 3s
-          --health-retries 30
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [age-pgvector, plain]
+    name: test (${{ matrix.database }})
     env:
       ARCHITECT_DATABASE_URL: postgresql://architect:architect@localhost:5432/architect
     steps:
       - uses: actions/checkout@v4
+      - name: Build Postgres 16 with Apache AGE and pgvector
+        if: matrix.database == 'age-pgvector'
+        run: docker build -t architect-postgres ci/knowledge-postgres
+      - name: Use plain Postgres 16
+        if: matrix.database == 'plain'
+        run: docker pull -q postgres:16 && docker tag postgres:16 architect-postgres
+      - name: Start Postgres
+        run: |
+          docker run -d --name postgres -p 5432:5432 \
+            -e POSTGRES_USER=architect -e POSTGRES_PASSWORD=architect -e POSTGRES_DB=architect \
+            architect-postgres
+          for i in $(seq 1 90); do
+            if docker exec postgres pg_isready -h 127.0.0.1 -U architect -d architect >/dev/null 2>&1; then break; fi
+            sleep 1
+          done
+          docker exec postgres pg_isready -h 127.0.0.1 -U architect -d architect
+          docker exec postgres psql -U architect -d architect -c "SELECT version()" \
+            -c "SELECT extname, extversion FROM pg_extension ORDER BY 1"
+      - name: The knowledge image has both extensions (so no parity test is deselected)
+        if: matrix.database == 'age-pgvector'
+        run: |
+          found=$(docker exec postgres psql -U architect -d architect -tAc \
+            "SELECT count(*) FROM pg_extension WHERE extname IN ('age', 'vector')")
+          test "$found" = "2"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -48,3 +66,38 @@ jobs:
       - run: pytest -v
         env:
           ARCHITECT_TEMPORAL_ADDRESS: localhost:7233
+
+  # The real local embedder (fastembed, ONNX on CPU): three sentences, and similar ones are
+  # closer. Every other test embeds with the deterministic mock.
+  fastembed-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: architect
+          POSTGRES_PASSWORD: architect
+          POSTGRES_DB: architect
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U architect -d architect"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
+    env:
+      ARCHITECT_DATABASE_URL: postgresql://architect:architect@localhost:5432/architect
+      ARCHITECT_FASTEMBED_CACHE: /home/runner/.cache/architect-fastembed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev,embeddings]"
+      - name: The embedding model, cached between runs
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/architect-fastembed
+          key: fastembed-model-${{ hashFiles('config/models.yaml') }}
+      - run: pytest -v -m fastembed_smoke

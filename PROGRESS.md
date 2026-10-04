@@ -15,14 +15,16 @@
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 | M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
 | M7 console, golden task #1 | **built**: gate decisions and extend, seed models, the console, golden task gt-001 and its runner; exit tests P1 to P6 green in CI. M7-live Part 1 (per-element waivers, L3 partial baseline, external kill with heartbeats) merged. **Phase 1 exit test: PENDING LIVE RUN** (M7-live Part 2) |
+| M8 knowledge graph + retrieval | **done**: write-ahead gateway calls, the graph projection, GraphStore (AGE and SQL) and VectorIndex (pgvector and exact) with parity tests, entity resolution, embeddings, hybrid retrieval, communities; exit tests K0 to K9 green in CI |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
 the read side, M3 built the checks engine, C2 moved the contracts to v1.1 (a minor version:
 optional fields and documented rules, every v1.0 document still valid), M4 built the gateway,
 M5 the ingestion pipeline and M6 the session engine. CI runs the whole suite on `postgres:16`
 with a Temporal dev server beside it: see the M7 section for the output. The live half of M7
-(the baseline and the Phase 1 exit test) is pending: see "M7-live" below. Phase 2 has not
-been started.
+(the baseline and the Phase 1 exit test) is pending: see "M7-live" below. Phase 2 began
+with M8, the knowledge plane; CI now runs the suite twice, on Postgres 16 with Apache AGE
+and pgvector and on a plain Postgres 16.
 
 ## M0: scaffold
 
@@ -1571,6 +1573,273 @@ Run in a session started from a shell where `ARCHITECT_ANTHROPIC_API_KEY` is set
    Repair quality is reported, not gated.
 3. Commit both scorecards under `goldens/results/` and paste them here.
 
+## M8: knowledge graph, entity resolution, hybrid retrieval, communities
+
+Phase 2 starts here. The flat claim store becomes a graph, searchable by meaning and
+summarized by theme. Retrieval is claim-first: every hit is a claim with its status, grade,
+conditions, taint and evidence locators, never a bare chunk of text. Built on branch
+`m8-graph-retrieval`. The live Phase 1 exit test is still pending (M7-live Part 2).
+
+### Step 0: the gateway never loses a paid call
+
+A provider attempt is now two `gw_calls` rows. A `started` row (the request, the prompt
+hash, the tokens and usd reserved) commits together with the reservation BEFORE the provider
+is called. The row that closes it (`ok`, `invalid_output` or `error`) names it in
+`started_id` and settles the spend in the same transaction. `state` is derived from
+`status`: started | completed | failed | abandoned. The table stays append-only.
+
+A `started` row that nothing closed is a call the process did not live to record.
+`Gateway.sweep_abandoned` closes it with an `abandoned` row and turns its RESERVED cost into
+spend: the provider may have been paid, so the books over-count and never under-count.
+`gw_spend.tokens`, `usd` and `calls` include abandoned calls and `abandoned_tokens`,
+`abandoned_usd`, `abandoned_calls` report them on their own (`architect gateway spend`). An
+abandoned reservation counts against a cap like any spend. The sweep runs:
+
+- when a session activity is retried (the retry is the evidence, so no minimum age applies);
+- when an ingestion job resumes, in the worker every `abandon_after_s`, and from
+  `architect gateway sweep` (calls older than `write_ahead.abandon_after_s`, 30 s, the
+  heartbeat timeout).
+
+The sweep cannot tell a dead call from a slow one. If an abandoned call does finish, closing
+it puts the books right: the actual numbers replace the reservation. Two partial unique
+indexes make "closed once, abandoned once" a fact of the table. Replay ignores `started` and
+`abandoned` rows. Heartbeats: every 10 s, timeout 30 s (`config/presets.yaml`).
+
+Ten existing tests compared the exact list of call statuses; with the owner's authorization
+each list gained the `started` row of every attempt (they are still exact):
+`test_gateway.py` (seven tests), `test_ingestion.py::test_h1_*`,
+`test_m7_gate_seed.py::test_p1_a_budget_stop_*`, `test_sessions.py::test_s4_a_tight_token_cap_*`.
+
+### The graph model
+
+A projection like every read model: folded by the projector in the cursor's transaction,
+rebuildable from the ledger, deterministic.
+
+| Node type | From |
+| --- | --- |
+| `source` | `source.ingested` |
+| `claim` | `claim.committed` |
+| `entity` | the subject and object of a committed claim that name an id (`ent:<type>:<id>`); a literal is a value, not a node |
+| `requirement` | a claim subject of type `requirement`, or a requirement element of the head model |
+| `element` | the elements of the HEAD model (replaced with every new head) |
+| `adr` | `decision.recorded` |
+| `community` | the subject of a community summary claim |
+
+Edges are everything in `proj_edges` (EVIDENCES, DERIVED_FROM, SUPERSEDES,
+DECISION_EVIDENCE, and the head model's SATISFIES, DEPENDS_ON, MITIGATES) plus, for every
+committed claim, `(subject) -[PREDICATE]-> (object)` when both are entities and
+`(claim) -[ABOUT]-> (entity)` for each entity it names (`proj_graph_edges`). Provenance (P2):
+every edge row carries the seq of its event and a claim-derived edge its claim id, both NOT
+NULL. Status, grade and conditions are read from the claim when an edge is returned.
+
+Entity merges resolve at read time: `proj_entity_alias` maps a merged id to the kept one,
+recomputed from the merges that stand. A reverted merge leaves the alias table, so the graph
+is what it was.
+
+### Two backends, proven identical
+
+| Interface | Backend | Where | What it is |
+| --- | --- | --- | --- |
+| GraphStore | `age` | CI (the knowledge image), Docker | the resolved graph loaded into an Apache AGE graph, traversed with Cypher one hop at a time; reloaded when the projection's cursor moves |
+| GraphStore | `sql` | everywhere | recursive CTEs over the projection tables |
+| VectorIndex | `pgvector` | CI (the knowledge image), Docker | a mirror table with a pgvector column and an HNSW index (cosine) |
+| VectorIndex | `exact` | everywhere | exact cosine in numpy over `emb_vectors` |
+
+`auto` (the default in `config/knowledge.yaml`) picks the extension when it is installed.
+The projection tables and `emb_vectors` are the record for both; the AGE graph and the
+pgvector table are indexes that can be dropped. Queries: `neighbors(node, depth <= 3,
+edge_types?)`, `paths(from, to, max_depth <= 6, edge_types?)` (every shortest path),
+`subgraph(node_ids)`.
+
+### Entity resolution
+
+Blocking: same entity_type AND (a shared name token OR slugs within edit distance 2). Score:
+the cosine of the entities' embeddings (the name, with up to 3 predicates it appears in).
+At or above **0.92**: merge (method `embedding`). From **0.80** to 0.92: a model adjudicates
+through the gateway (tier-cheap, purpose `entity-adjudicate`, structured `{same, reason}`,
+the names passed as untrusted data); a yes merges (method `llm_adjudicated`). Below 0.80:
+distinct. A merge is an `entity.merged` event through the Arbiter, keeping the entity more
+claims are about. `entity.merge_reverted` (signed by a human) undoes it, and the reverted
+merges in the ledger are the record of pairs never to propose again. Types never mix.
+
+### Embeddings
+
+`Gateway.embed(texts, purpose, scope)`: one path, recorded in `gw_calls` (written ahead),
+cached by (model, content hash) in `gw_embed_cache`, budget-scoped. The call log records
+counts and the hash of the batch, not the texts. Providers: the mock (deterministic vectors
+from hashed words; every CI test but the smoke job), `openai_compat` (`POST /v1/embeddings`)
+and `fastembed` (local ONNX on CPU; optional: `pip install -e ".[embeddings]"`). The model id
+is in `config/models.yaml` under the `embedding` tier, and nowhere else. What is embedded:
+each committed claim's canonical text (subject, predicate, object, magnitude, conditions,
+quote) and each entity's name. `emb_vectors` remembers the hash of the text, so a claim or an
+entity is embedded again only when its text or the model changes. The knowledge plane's
+calls are charged to the scope `{session: "knowledge:<project>"}`.
+
+### Retrieval fusion
+
+`search(project, query, k=20, filters)` runs four signals and fuses their ranks:
+
+| Signal | What ranks |
+| --- | --- |
+| `text` | Postgres full-text (`tsvector`, English) over each claim's canonical text and quote |
+| `vector` | nearest neighbours of the query among the claim embeddings |
+| `graph` | the entities the query matches (by name and by meaning, at most 5) and the claims one hop from them; a claim about better-matched entities ranks higher |
+| `community` | the current community summaries, when `scope=global` or no entity matched |
+
+Reciprocal Rank Fusion: `score = sum over signals of 1 / (60 + rank)`, ties by claim id. Each
+signal contributes up to 50 candidates. Filters: grades (default design_grade and
+unverified), statuses (default: not refuted, not retracted), taint origins, entity scope.
+Quarantined proposals are returned only when `grade=quarantined` is asked for. Each hit
+lists the signals that found it. Confidence is returned for display; it never includes or
+excludes (rule 10). Without an embedding provider the vector signal is absent and the others
+run. The Context Compiler's `rank_claims` now calls this search.
+
+### Communities
+
+Leiden (leidenalg over python-igraph), seed 7, over the entity graph (entities related by
+live claims, weighted by how many). Level 0 at resolution 1.0; level 1 is Leiden again over
+level 0's communities at resolution 0.5, so the levels nest. One summary per community of at
+least 2 entities, written by tier-mid (purpose `community-summary`) from its top 12 claims
+(design grade first), untrusted claims wrapped. The summary is a claim: subject
+`{community, comm_<level>_<hash of members>}`, predicate SUMMARIZES, object `{text, ...}`,
+status `inferred`, `derived_from` the claims used, taint the most restrictive among them.
+A community's input hash (members and the claims used) decides regeneration: unchanged
+communities never call the model again.
+
+### Commands
+
+```
+architect search --project P "what prevents split brain" [-k 20] [--grade design_grade]
+                 [--taint user] [--entity ent:protocol:fencing-token] [--scope global] [--json]
+architect graph counts --project P
+architect graph neighbors --project P ent:protocol:fencing-token --depth 2 [--edge-type PREVENTS]
+architect graph path --project P FROM TO [--max-depth 4]
+architect resolve-entities --project P [--revert EVENT_ID --signer NAME]
+architect communities rebuild --project P ; architect communities list --project P [--level 0]
+architect gateway sweep [--session S] [--older-than SECONDS]
+
+GET /v1/projects/{pid}/search?q=&k=&grade=&status=&taint=&entity=&scope=
+GET /v1/projects/{pid}/graph ; GET .../graph/nodes/{id}/neighbors?depth=&edge_type=
+GET /v1/projects/{pid}/graph/path?from=&to=&max_depth= ; GET /v1/projects/{pid}/communities[?level=]
+```
+
+### Decisions worth knowing
+
+- **Merges resolve at read time, not by rewriting edges.** Raw edges keep the ids the claims
+  used; the alias table says what they answer to. A revert is one deleted alias.
+- **The AGE graph is a loaded copy**, rebuilt in full when the cursor moves. Fine for the
+  graphs of today; an incremental load is the obvious next step when a project grows.
+- **AGE never runs on a pooled connection.** It keeps per-session caches, and a session that
+  has dropped a graph failed later on an unrelated statement ("label (relation) cache
+  corrupted", AGE 1.6). Each AGE query opens a connection and closes it.
+- **The AGE backend traverses breadth-first over one-hop Cypher queries** rather than one
+  variable-length pattern: AGE's support for filtering relationship properties inside a
+  variable-length match is thin, and it makes the two backends independent implementations.
+- **Retrieval's one-hop graph expansion reads the projection tables directly** on both
+  backends: it is an indexed lookup, not a traversal, and it keeps search independent of the
+  AGE load.
+- **A community summary is returned only through the community signal.** In a local search
+  it would compete with the claims it was written from.
+- **Session tests run retrieval without vectors.** Their model tables have no embedding
+  tier, so the compiler ranks with full text and the graph and a session's call log holds
+  only its own calls. `test_k7_*` exercises the compiler with embeddings.
+- **The search endpoint brings the search index up to the read models before it answers**
+  (and embeds the query): it is a GET that may write derived index rows, never an event.
+- **Quotes.** A claim carries only a locator, so the pipeline now keeps the verbatim quote
+  it committed a claim with (`ing_claim_quotes`) for the claim's searchable text. Search
+  never returns it: a hit is the claim and its locator.
+
+### An intermittent deadlock at startup: found in CI, reproduced, fixed
+
+After the exit tests were green, one CI run on the knowledge image failed two session tests
+(`test_sessions.py::test_session_cli` and `test_m7_console.py::test_p3_watch_*`) with
+`psycopg.errors.DeadlockDetected`. Three earlier runs of the same code had passed.
+
+| Step | Result |
+| --- | --- |
+| CI, run 37191610184 on `d08d665`, job test (age-pgvector) | **2 failed**, 371 passed |
+| The failing statement, the same in both | `ensure_schema` in the CLI's `main`: "waits for AccessExclusiveLock on relation (gw_spend); blocked by process B. Process B waits for RowExclusiveLock on relation (gw_calls)" |
+| Reproduce: the two unmodified tests, 12 isolated runs on a frozen checkout of `d08d665`, output kept | **2 failed, 10 passed**, both with that deadlock |
+| Reproduce deterministically | `test_schema_bootstrap.py::test_applying_the_ddl_under_a_writer_is_the_deadlock_and_the_fast_path_avoids_it` |
+| After the fix: the two tests, 100 iterations on a frozen checkout of `9f661ad` | **100 green of 100, 0 failed** |
+
+**Root cause, in the code.** Every process re-applied `schema.sql` when it started. The DDL
+is idempotent but not free: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT
+EXISTS` and `CREATE OR REPLACE TRIGGER` take table locks that conflict with writers, one
+table after another, and hold them until the transaction ends. Step 0 made a gateway
+transaction write `gw_spend` and then `gw_calls` (the reservation and the `started` row
+commit together), and added ALTERs on both tables. A command starting at that moment held
+`gw_calls` and waited for `gw_spend`, while the worker held `gw_spend` and waited for
+`gw_calls`. Postgres broke the cycle by failing one of them; it could as well have been the
+worker's model call.
+
+**The fix.** `ensure_schema` applies the DDL only when it has something to do: the sha256
+of `schema.sql` is kept in `schema_meta`, and the DDL runs when it differs (an upgrade) or
+when a table the schema creates is missing. A process starting on a current schema reads
+two catalog queries and takes no table lock. `architect init-db` forces it. The same rule
+was applied to the pgvector mirror table, which a new index instance used to re-declare on
+first use. Tests: a start under an open writer transaction returns at once; the forced DDL
+under the same writer is the deadlock; a dropped table or a changed hash is applied again;
+four processes starting on an empty schema apply it once.
+
+### Exit tests
+
+| # | Exit test | Result | Evidence |
+| --- | --- | --- | --- |
+| K0 | Step 0: a started row exists before the provider is called; an unclosed call is abandoned with its reservation charged; conservative spend; the retried call completes; a worker killed mid-call | green | `test_gateway.py::test_k0_*` (7 tests), `test_sessions_server.py::test_k0_a_worker_killed_in_the_middle_of_a_model_call_loses_no_spend` (real dev server, OS-level kill), `test_ingestion.py::test_a_resumed_job_abandons_the_call_its_dead_run_started` |
+| K1 | Graph: node and edge counts on the fixture and on the M5 ingestion corpus match the pinned tables; rebuild identical; every edge has provenance | green | `test_m8_graph.py::test_k1_*` (4 tests) |
+| K2 | Backend parity: GraphStore sql vs age on 20 seeded queries; VectorIndex pgvector (exact mode) vs numpy on 20 queries; HNSW recall recorded | green | `test_m8_graph.py::test_k2_the_age_backend_gives_the_same_answers_as_sql_on_twenty_seeded_queries`, `test_m8_retrieval.py::test_k2_pgvector_in_exact_mode_gives_the_same_top_k_as_numpy_and_hnsw_recall_is_recorded` (both on the knowledge image); each fallback against a reference: `::test_k2_the_sql_graph_store_agrees_with_a_reference_traversal`, `::test_k2_the_exact_vector_index_agrees_with_brute_force` (both jobs) |
+| K3 | Entity resolution with scripted embeddings: auto-merge, adjudication, types never mix, merges are events, revert restores the graph, a re-run proposes nothing, a reverted pair is not proposed again | green | `test_m8_graph.py::test_k3_*` (4 tests) |
+| K4 | Embeddings recorded in gw_calls, cached (no second provider call), budget-scoped; fastembed embeds 3 sentences | green | `test_m8_retrieval.py::test_k4_*` (4 tests); smoke job: `::test_k4_fastembed_embeds_three_sentences_and_similar_ones_are_closer` |
+| K5 | Retrieval golden (61 claims, 10 queries): every expected claim in the top 5; one query only vectors answer, one only full text, hybrid both; quarantined never by default; taint filter; signals listed | green | `test_m8_retrieval.py::test_k5_*` (4 tests) |
+| K6 | Communities: same partition on rebuild; summaries are inferred claims with derived_from and propagated taint; one changed claim regenerates exactly the affected summaries; a global query returns a summary | green | `test_m8_retrieval.py::test_k6_*` (3 tests) |
+| K7 | The S1 session and the P5 golden pass on the new compiler; S9's rules hold | green | `test_sessions.py::test_s1_*`, `::test_s9_*` and `test_m7_golden.py::test_p5_*`, all unchanged; `test_m8_retrieval.py::test_k7_the_compiler_ranks_with_hybrid_retrieval_and_keeps_its_rules` |
+| K8 | 10,000 synthetic claims on pgvector: search p95 < 500 ms | green | `test_m8_retrieval.py::test_k8_search_over_ten_thousand_claims_stays_under_half_a_second_at_p95`: **p50 23.5 ms, p95 25.3 ms** |
+| K9 | Search never returns raw segment text without its claim; the knowledge package imports no provider SDK | green | `test_m8_retrieval.py::test_k9_*` (2 tests) |
+| | API and CLI of the knowledge plane; every pre-existing test | green | `test_m8_retrieval.py::test_search_graph_and_community_endpoints`, `::test_search_graph_resolve_and_communities_commands`; the runs below |
+
+Numbers from CI (push run 37190781914):
+
+```
+K2 HNSW recall@10 over 2000 vectors of 64 d, 20 queries: 1.000
+K8 search over 10,000 claims (4887 entities, pgvector HNSW, 64 d): p50 23.5 ms, p95 25.3 ms, max 29.6 ms over 100 queries; indexing 23.8 s
+fastembed BAAI/bge-small-en-v1.5: similar 0.777, unrelated 0.471
+```
+
+K8 uses the mock embedder's 64-d vectors and claims written straight into the read models
+(the ledger path would fold grades 10,000 times over); it times the whole search: the query
+embedding, full text, pgvector HNSW, the entity match, the graph expansion and the fusion.
+
+CI output (branch head `9f661ad`, push run 37192278371 on `ubuntu-latest`, with a Temporal
+dev server started by the Temporal CLI; the pull_request run 37192280760 agreed):
+
+```
+test (age-pgvector)   ================ 378 passed, 5 deselected in 234.01s (0:03:54) =================
+test (plain)          ================ 374 passed, 9 deselected in 203.12s (0:03:23) =================
+fastembed-smoke       ====================== 1 passed, 382 deselected in 3.13s =======================
+```
+
+Nothing failed and nothing was skipped. On the knowledge image (Postgres 16, Apache AGE 1.6,
+pgvector 0.8) the five deselected tests are the four live ones and the fastembed smoke test.
+On the plain Postgres the AGE parity test, the two pgvector tests and K8 are deselected as
+well: they run where the extensions exist. The K2 and K8 numbers above are from run
+37190781914 (`4b82d37`); on `9f661ad` K8 measured p50 21.7 ms, p95 23.5 ms.
+
+The first CI run of the branch (`9b7b911`, run 37189691150) passed every M8 test on the
+knowledge image and then failed 100 later tests at setup: a test's teardown had dropped an
+AGE graph on the suite's long-lived admin connection, and AGE then failed that session's
+next statement with "label (relation) cache corrupted". The fix is in the product, not only
+the tests: the AGE backend now runs every query on a connection of its own.
+
+Local runs on Windows (portable PostgreSQL 16, no extensions: the fallbacks; mock providers):
+
+| Commit | Run | Result |
+| --- | --- | --- |
+| `a88394e` (step 0) | full suite | 340 passed, 4 deselected in 505 s |
+| `9b7b911` | full suite | 368 passed, 8 deselected in 744 s |
+| `d08d665` (before the startup fix) | the two session CLI tests, 12 isolated runs | 10 passed, **2 failed** (deadlock) |
+| `9f661ad` (the fix) | the two session CLI tests, 100 iterations | 100 green |
+
 ## Windows
 
 The database-backed tests ran only on Linux in CI through M5. With M6 the development
@@ -1580,7 +1849,7 @@ deselected).
 
 ## Open
 
-1. **M7-live Part 2**: the live baseline (L1, L3, L4) and the two live golden runs that
+1. **M7-live Part 2** (still open after M8): the live baseline (L1, L3, L4) and the two live golden runs that
    decide the Phase 1 exit test. They need `ARCHITECT_ANTHROPIC_API_KEY` in the launching shell.
 2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
    session status event) stay open; P-7 to P-10 were applied in v1.1. Multi-head branching is

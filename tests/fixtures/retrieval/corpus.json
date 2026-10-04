@@ -1,0 +1,918 @@
+{
+  "about": "A labeled retrieval corpus: 61 claims in six themes (caching, consensus, storage, queues, security, observability), two quarantined proposals, and ten queries with the claims a correct search must return. `synonyms` is what the scripted embedder knows beyond the corpus's own words; `unknown_to_embedder` are words it has no direction for.",
+  "sources": {
+    "paper": {
+      "taint_origin": "external_untrusted",
+      "uri": "https://example.org/survey.pdf"
+    },
+    "docs": {
+      "taint_origin": "external_trusted",
+      "uri": "https://docs.example.org/guide"
+    },
+    "notes": {
+      "taint_origin": "user",
+      "uri": "file:///notes/design.md"
+    }
+  },
+  "claims": [
+    {
+      "name": "a01",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-layer"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "read-latency"
+      }
+    },
+    {
+      "name": "a02",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-layer"
+      },
+      "predicate": "REQUIRES",
+      "object": {
+        "entity_type": "property",
+        "id": "eviction-policy"
+      }
+    },
+    {
+      "name": "a03",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "lru-eviction"
+      },
+      "predicate": "BOUNDS",
+      "object": {
+        "entity_type": "property",
+        "id": "memory-footprint"
+      }
+    },
+    {
+      "name": "a04",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-ttl"
+      },
+      "predicate": "LIMITS",
+      "object": {
+        "entity_type": "property",
+        "id": "stale-reads"
+      }
+    },
+    {
+      "name": "a05",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "write-through-cache"
+      },
+      "predicate": "INCREASES",
+      "object": {
+        "entity_type": "property",
+        "id": "write-latency"
+      }
+    },
+    {
+      "name": "a06",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-stampede"
+      },
+      "predicate": "CAUSES",
+      "object": {
+        "entity_type": "property",
+        "id": "origin-overload"
+      }
+    },
+    {
+      "name": "a07",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "request-coalescing"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "cache-stampede"
+      }
+    },
+    {
+      "name": "a08",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-hit-ratio"
+      },
+      "predicate": "DEPENDS_ON",
+      "object": {
+        "entity_type": "property",
+        "id": "key-cardinality"
+      }
+    },
+    {
+      "name": "a09",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "negative-caching"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "origin-load"
+      }
+    },
+    {
+      "name": "a10",
+      "source": "docs",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-warming"
+      },
+      "predicate": "IMPROVES",
+      "object": {
+        "entity_type": "property",
+        "id": "cold-start-latency"
+      }
+    },
+    {
+      "name": "b01",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "raft-consensus"
+      },
+      "predicate": "REQUIRES",
+      "object": {
+        "entity_type": "property",
+        "id": "majority-quorum"
+      }
+    },
+    {
+      "name": "b02",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "leader-election"
+      },
+      "predicate": "USES",
+      "object": {
+        "entity_type": "property",
+        "id": "randomized-timeouts"
+      }
+    },
+    {
+      "name": "b03",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "fencing-token"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "split-brain"
+      }
+    },
+    {
+      "name": "b04",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "lease-renewal"
+      },
+      "predicate": "DEPENDS_ON",
+      "object": {
+        "entity_type": "property",
+        "id": "clock-drift-bound"
+      }
+    },
+    {
+      "name": "b05",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "raft-log"
+      },
+      "predicate": "REPLICATES",
+      "object": {
+        "entity_type": "property",
+        "id": "state-machine-commands"
+      }
+    },
+    {
+      "name": "b06",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "quorum-loss"
+      },
+      "predicate": "CAUSES",
+      "object": {
+        "entity_type": "property",
+        "id": "write-unavailability"
+      }
+    },
+    {
+      "name": "b07",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "learner-replica"
+      },
+      "predicate": "IMPROVES",
+      "object": {
+        "entity_type": "property",
+        "id": "read-scalability"
+      }
+    },
+    {
+      "name": "b08",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "membership-change"
+      },
+      "predicate": "REQUIRES",
+      "object": {
+        "entity_type": "property",
+        "id": "joint-consensus"
+      }
+    },
+    {
+      "name": "b09",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "heartbeat-interval"
+      },
+      "predicate": "BOUNDS",
+      "object": {
+        "entity_type": "property",
+        "id": "failure-detection-time"
+      }
+    },
+    {
+      "name": "b10",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "leader-lease"
+      },
+      "predicate": "ENABLES",
+      "object": {
+        "entity_type": "property",
+        "id": "local-reads"
+      }
+    },
+    {
+      "name": "c01",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "write-ahead-log"
+      },
+      "predicate": "GUARANTEES",
+      "object": {
+        "entity_type": "property",
+        "id": "crash-durability"
+      }
+    },
+    {
+      "name": "c02",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "group-commit"
+      },
+      "predicate": "IMPROVES",
+      "object": {
+        "entity_type": "property",
+        "id": "fsync-throughput"
+      }
+    },
+    {
+      "name": "c03",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "lsm-compaction"
+      },
+      "predicate": "CAUSES",
+      "object": {
+        "entity_type": "property",
+        "id": "write-stalls"
+      }
+    },
+    {
+      "name": "c04",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "bloom-filter"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "disk-lookups"
+      }
+    },
+    {
+      "name": "c05",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "checkpointing"
+      },
+      "predicate": "BOUNDS",
+      "object": {
+        "entity_type": "property",
+        "id": "recovery-time"
+      }
+    },
+    {
+      "name": "c06",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "page-checksums"
+      },
+      "predicate": "DETECT",
+      "object": {
+        "entity_type": "property",
+        "id": "silent-corruption"
+      }
+    },
+    {
+      "name": "c07",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "direct-io"
+      },
+      "predicate": "AVOIDS",
+      "object": {
+        "entity_type": "property",
+        "id": "double-buffering"
+      }
+    },
+    {
+      "name": "c08",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "segment-format-xk9"
+      },
+      "predicate": "REQUIRES",
+      "object": {
+        "entity_type": "property",
+        "id": "aligned-512-blocks"
+      }
+    },
+    {
+      "name": "c09",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "tiered-storage"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "storage-cost"
+      }
+    },
+    {
+      "name": "c10",
+      "source": "paper",
+      "subject": {
+        "entity_type": "mechanism",
+        "id": "snapshot-isolation"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "dirty-reads"
+      }
+    },
+    {
+      "name": "d01",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "message-broker"
+      },
+      "predicate": "DECOUPLES",
+      "object": {
+        "entity_type": "property",
+        "id": "producers-and-consumers"
+      }
+    },
+    {
+      "name": "d02",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "consumer-lag"
+      },
+      "predicate": "INDICATES",
+      "object": {
+        "entity_type": "property",
+        "id": "insufficient-throughput"
+      }
+    },
+    {
+      "name": "d03",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "backpressure"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "queue-overflow"
+      }
+    },
+    {
+      "name": "d04",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "dead-letter-queue"
+      },
+      "predicate": "ISOLATES",
+      "object": {
+        "entity_type": "property",
+        "id": "poison-messages"
+      }
+    },
+    {
+      "name": "d05",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "at-least-once-delivery"
+      },
+      "predicate": "REQUIRES",
+      "object": {
+        "entity_type": "property",
+        "id": "idempotent-consumers"
+      }
+    },
+    {
+      "name": "d06",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "partition-key"
+      },
+      "predicate": "PRESERVES",
+      "object": {
+        "entity_type": "property",
+        "id": "per-key-ordering"
+      }
+    },
+    {
+      "name": "d07",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "batch-size"
+      },
+      "predicate": "TRADES",
+      "object": {
+        "entity_type": "property",
+        "id": "latency-for-throughput"
+      }
+    },
+    {
+      "name": "d08",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "visibility-timeout"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "duplicate-processing"
+      }
+    },
+    {
+      "name": "d09",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "consumer-group"
+      },
+      "predicate": "ENABLES",
+      "object": {
+        "entity_type": "property",
+        "id": "horizontal-scaling"
+      }
+    },
+    {
+      "name": "d10",
+      "source": "notes",
+      "subject": {
+        "entity_type": "component",
+        "id": "retention-period"
+      },
+      "predicate": "BOUNDS",
+      "object": {
+        "entity_type": "property",
+        "id": "replay-window"
+      }
+    },
+    {
+      "name": "e01",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "mutual-tls"
+      },
+      "predicate": "AUTHENTICATES",
+      "object": {
+        "entity_type": "property",
+        "id": "service-identity"
+      }
+    },
+    {
+      "name": "e02",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "token-rotation"
+      },
+      "predicate": "LIMITS",
+      "object": {
+        "entity_type": "property",
+        "id": "credential-exposure"
+      }
+    },
+    {
+      "name": "e03",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "short-lived-tokens"
+      },
+      "predicate": "REDUCE",
+      "object": {
+        "entity_type": "property",
+        "id": "blast-radius"
+      }
+    },
+    {
+      "name": "e04",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "secrets-manager"
+      },
+      "predicate": "CENTRALIZES",
+      "object": {
+        "entity_type": "property",
+        "id": "credential-storage"
+      }
+    },
+    {
+      "name": "e05",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "rate-limiting"
+      },
+      "predicate": "MITIGATES",
+      "object": {
+        "entity_type": "property",
+        "id": "credential-stuffing"
+      }
+    },
+    {
+      "name": "e06",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "audit-log"
+      },
+      "predicate": "RECORDS",
+      "object": {
+        "entity_type": "property",
+        "id": "privileged-actions"
+      }
+    },
+    {
+      "name": "e07",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "least-privilege"
+      },
+      "predicate": "RESTRICTS",
+      "object": {
+        "entity_type": "property",
+        "id": "lateral-movement"
+      }
+    },
+    {
+      "name": "e08",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "key-management-service"
+      },
+      "predicate": "PROTECTS",
+      "object": {
+        "entity_type": "property",
+        "id": "encryption-keys"
+      }
+    },
+    {
+      "name": "e09",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "envelope-encryption"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "key-exposure"
+      }
+    },
+    {
+      "name": "e10",
+      "source": "docs",
+      "subject": {
+        "entity_type": "control",
+        "id": "certificate-pinning"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "impersonation"
+      }
+    },
+    {
+      "name": "f01",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "distributed-tracing"
+      },
+      "predicate": "REVEALS",
+      "object": {
+        "entity_type": "property",
+        "id": "latency-bottlenecks"
+      }
+    },
+    {
+      "name": "f02",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "trace-sampling"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "telemetry-cost"
+      }
+    },
+    {
+      "name": "f03",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "slo-burn-rate"
+      },
+      "predicate": "TRIGGERS",
+      "object": {
+        "entity_type": "property",
+        "id": "paging-alerts"
+      }
+    },
+    {
+      "name": "f04",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "structured-logging"
+      },
+      "predicate": "ENABLES",
+      "object": {
+        "entity_type": "property",
+        "id": "log-queries"
+      }
+    },
+    {
+      "name": "f05",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "cardinality-explosion"
+      },
+      "predicate": "DEGRADES",
+      "object": {
+        "entity_type": "property",
+        "id": "metrics-backend"
+      }
+    },
+    {
+      "name": "f06",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "health-checks"
+      },
+      "predicate": "DETECT",
+      "object": {
+        "entity_type": "property",
+        "id": "unhealthy-instances"
+      }
+    },
+    {
+      "name": "f07",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "error-budget"
+      },
+      "predicate": "GOVERNS",
+      "object": {
+        "entity_type": "property",
+        "id": "release-velocity"
+      }
+    },
+    {
+      "name": "f08",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "exemplars"
+      },
+      "predicate": "LINK",
+      "object": {
+        "entity_type": "property",
+        "id": "metrics-to-traces"
+      }
+    },
+    {
+      "name": "f09",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "synthetic-probes"
+      },
+      "predicate": "MEASURE",
+      "object": {
+        "entity_type": "property",
+        "id": "user-facing-availability"
+      }
+    },
+    {
+      "name": "f10",
+      "source": "notes",
+      "subject": {
+        "entity_type": "practice",
+        "id": "alert-fatigue"
+      },
+      "predicate": "REDUCES",
+      "object": {
+        "entity_type": "property",
+        "id": "incident-response-quality"
+      }
+    },
+    {
+      "name": "b03x",
+      "source": "docs",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "fencing-token"
+      },
+      "predicate": "PREVENTS",
+      "object": {
+        "entity_type": "property",
+        "id": "split-brain"
+      }
+    }
+  ],
+  "quarantined": [
+    {
+      "name": "q01",
+      "source": "paper",
+      "subject": {
+        "entity_type": "protocol",
+        "id": "fencing-token"
+      },
+      "predicate": "ELIMINATES",
+      "object": {
+        "entity_type": "property",
+        "id": "split-brain"
+      }
+    },
+    {
+      "name": "q02",
+      "source": "paper",
+      "subject": {
+        "entity_type": "technique",
+        "id": "cache-layer"
+      },
+      "predicate": "GUARANTEES",
+      "object": {
+        "entity_type": "property",
+        "id": "read-latency"
+      }
+    }
+  ],
+  "synonyms": {
+    "memoization": "cache",
+    "freshness": "stale",
+    "expiry": "ttl",
+    "netsplit": "split",
+    "partitioned": "brain"
+  },
+  "unknown_to_embedder": [
+    "xk9"
+  ],
+  "queries": [
+    {
+      "q": "what prevents split brain",
+      "relevant": [
+        "b03",
+        "b03x"
+      ]
+    },
+    {
+      "q": "group commit and fsync throughput",
+      "relevant": [
+        "c02"
+      ]
+    },
+    {
+      "q": "cache stampede",
+      "relevant": [
+        "a06",
+        "a07"
+      ]
+    },
+    {
+      "q": "dead letter queue for poison messages",
+      "relevant": [
+        "d04"
+      ]
+    },
+    {
+      "q": "token rotation credential exposure",
+      "relevant": [
+        "e02"
+      ]
+    },
+    {
+      "q": "trace sampling telemetry cost",
+      "relevant": [
+        "f02"
+      ]
+    },
+    {
+      "q": "memoization freshness expiry",
+      "relevant": [
+        "a04"
+      ],
+      "only": "vector",
+      "note": "no word of the query is in the corpus; the embedder knows the synonyms"
+    },
+    {
+      "q": "xk9",
+      "relevant": [
+        "c08"
+      ],
+      "only": "text",
+      "note": "an identifier the embedder has no direction for"
+    },
+    {
+      "q": "raft majority quorum",
+      "relevant": [
+        "b01"
+      ]
+    },
+    {
+      "q": "consumer lag throughput",
+      "relevant": [
+        "d02"
+      ]
+    }
+  ]
+}

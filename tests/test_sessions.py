@@ -329,7 +329,7 @@ def test_s4_a_tight_token_cap_stops_the_session_with_the_best_so_far(pool, tmp_p
             r["status"]
             for r in conn.execute("SELECT status FROM gw_calls ORDER BY ts, call_id").fetchall()
         ]
-    assert statuses == ["ok", "ok", "budget_refused"]
+    assert statuses == ["started", "ok", "started", "ok", "budget_refused"]
     checkpoints = [p for t, p in payloads(pool) if t == "session.checkpoint"]
     spent = gateway.spend({"session": SESSION_ID})
     assert checkpoints[-1]["spend"] == {"tokens": spent["tokens"], "usd": spent["usd"]}

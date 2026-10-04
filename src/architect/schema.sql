@@ -260,6 +260,58 @@ CREATE TABLE IF NOT EXISTS proj_session_timeline (
     PRIMARY KEY (project_id, seq)
 );
 
+-- The knowledge graph (M8), a projection like the tables above. Nodes: sources, claims,
+-- entities (the subjects and objects of claims), the elements and requirements of the HEAD
+-- model, ADRs and communities. `seq` is the event that introduced the node; `origin` says
+-- whether an event or the head model put it there (model nodes are replaced with each head).
+CREATE TABLE IF NOT EXISTS proj_graph_nodes (
+    project_id  text   NOT NULL REFERENCES projects (project_id),
+    node_id     text   NOT NULL,
+    node_type   text   NOT NULL CHECK (node_type IN
+        ('source', 'claim', 'entity', 'element', 'requirement', 'adr', 'community')),
+    entity_type text,
+    label       text   NOT NULL,
+    origin      text   NOT NULL CHECK (origin IN ('event', 'model')),
+    seq         bigint NOT NULL,
+    PRIMARY KEY (project_id, node_id)
+);
+
+-- The edges derived from claims: (subject) -[PREDICATE]-> (object) and (claim) -[ABOUT]->
+-- (entity). The other edges of the graph are proj_edges. P2: an edge without provenance is
+-- un-storable, so seq (the committing event) and claim_id are both NOT NULL.
+CREATE TABLE IF NOT EXISTS proj_graph_edges (
+    project_id text    NOT NULL REFERENCES projects (project_id),
+    seq        bigint  NOT NULL,
+    ord        integer NOT NULL,
+    edge_type  text    NOT NULL,
+    src        text    NOT NULL,
+    dst        text    NOT NULL,
+    claim_id   text    NOT NULL,
+    PRIMARY KEY (project_id, seq, ord)
+);
+CREATE INDEX IF NOT EXISTS proj_graph_edges_by_src ON proj_graph_edges (project_id, src);
+CREATE INDEX IF NOT EXISTS proj_graph_edges_by_dst ON proj_graph_edges (project_id, dst);
+
+-- entity.merged events, and whether an entity.merge_reverted undid them.
+CREATE TABLE IF NOT EXISTS proj_entity_merges (
+    project_id   text   NOT NULL REFERENCES projects (project_id),
+    seq          bigint NOT NULL,
+    event_id     text   NOT NULL,
+    kept_id      text   NOT NULL,
+    merged_ids   text[] NOT NULL,
+    method       text   NOT NULL,
+    reverted_seq bigint,
+    PRIMARY KEY (project_id, seq)
+);
+
+-- entity -> the id it answers to now, from the merges that are not reverted.
+CREATE TABLE IF NOT EXISTS proj_entity_alias (
+    project_id   text NOT NULL REFERENCES projects (project_id),
+    entity_id    text NOT NULL,
+    canonical_id text NOT NULL,
+    PRIMARY KEY (project_id, entity_id)
+);
+
 -- The model gateway (M4). Not projections of the ledger: the call log is its own append-only
 -- record, the cache and the spend table are operational state.
 CREATE OR REPLACE FUNCTION append_only() RETURNS trigger
@@ -291,10 +343,38 @@ CREATE TABLE IF NOT EXISTS gw_calls (
     latency_ms   integer     NOT NULL DEFAULT 0,
     cache_hit    boolean     NOT NULL DEFAULT false,
     attempt      integer     NOT NULL,
-    status       text        NOT NULL CHECK (status IN ('ok', 'error', 'invalid_output', 'cache_hit', 'replay', 'budget_refused')),
+    status       text        NOT NULL,
     input_taints jsonb       NOT NULL
 );
 CREATE INDEX IF NOT EXISTS gw_calls_by_prompt ON gw_calls (prompt_hash, ts);
+
+-- Write-ahead call records (M8 step 0). A provider attempt is two rows: `started` before the
+-- provider is called (with what was reserved for it), then the row that closes it, which
+-- names it in started_id. A started row nothing closed is closed by the sweep as
+-- `abandoned`. `state` is derived from `status`.
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS started_id text;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS reserved_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS reserved_usd numeric NOT NULL DEFAULT 0;
+ALTER TABLE gw_calls ADD COLUMN IF NOT EXISTS state text GENERATED ALWAYS AS (
+    CASE status
+        WHEN 'started' THEN 'started'
+        WHEN 'abandoned' THEN 'abandoned'
+        WHEN 'error' THEN 'failed'
+        WHEN 'budget_refused' THEN 'failed'
+        ELSE 'completed'
+    END
+) STORED;
+ALTER TABLE gw_calls DROP CONSTRAINT IF EXISTS gw_calls_status_check;
+ALTER TABLE gw_calls ADD CONSTRAINT gw_calls_status_check CHECK (status IN (
+    'started', 'ok', 'error', 'invalid_output', 'cache_hit', 'replay', 'budget_refused',
+    'abandoned'
+)) NOT VALID;
+-- a started row is closed at most once by its own attempt and at most once by the sweep
+CREATE UNIQUE INDEX IF NOT EXISTS gw_calls_one_close
+    ON gw_calls (started_id) WHERE started_id IS NOT NULL AND status <> 'abandoned';
+CREATE UNIQUE INDEX IF NOT EXISTS gw_calls_one_abandon
+    ON gw_calls (started_id) WHERE status = 'abandoned';
+CREATE INDEX IF NOT EXISTS gw_calls_open ON gw_calls (ts) WHERE status = 'started';
 
 CREATE OR REPLACE TRIGGER gw_calls_no_update_delete
     BEFORE UPDATE OR DELETE ON gw_calls
@@ -321,6 +401,10 @@ CREATE TABLE IF NOT EXISTS gw_spend (
     reserved_usd    numeric NOT NULL DEFAULT 0,
     calls           integer NOT NULL DEFAULT 0
 );
+-- Abandoned calls (M8 step 0): their reservations, charged. Included in tokens, usd and calls.
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_usd numeric NOT NULL DEFAULT 0;
+ALTER TABLE gw_spend ADD COLUMN IF NOT EXISTS abandoned_calls integer NOT NULL DEFAULT 0;
 
 -- Ingestion (M5): derived, operational state. Segments are rebuildable from the object store;
 -- jobs, candidates and quarantine from the gateway's call log.
@@ -445,3 +529,101 @@ ALTER TABLE ses_sessions ADD COLUMN IF NOT EXISTS waivers jsonb NOT NULL DEFAULT
 -- M7: the order messages were recorded in. `ts` is the session clock's origin (the same for
 -- every message of a session, so a replay is identical), so it cannot order them.
 ALTER TABLE ag_messages ADD COLUMN IF NOT EXISTS n bigserial;
+
+-- The knowledge plane (M8). Derived, operational state: all of it can be dropped and built
+-- again from the read models and the gateway.
+
+-- Embeddings by (model, text): a hit never reaches a provider.
+CREATE TABLE IF NOT EXISTS gw_embed_cache (
+    model      text        NOT NULL,
+    text_hash  text        NOT NULL,
+    dim        integer     NOT NULL,
+    vector     real[]      NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (model, text_hash)
+);
+
+-- The vectors of a project's claims and entities. text_hash says what text was embedded, so
+-- a claim or entity is embedded again only when its text or the model changes.
+CREATE TABLE IF NOT EXISTS emb_vectors (
+    project_id text    NOT NULL REFERENCES projects (project_id),
+    kind       text    NOT NULL CHECK (kind IN ('claim', 'entity')),
+    id         text    NOT NULL,
+    model      text    NOT NULL,
+    dim        integer NOT NULL,
+    text_hash  text    NOT NULL,
+    vector     real[]  NOT NULL,
+    PRIMARY KEY (project_id, kind, id, model)
+);
+
+-- The verbatim quote an extracted claim was committed with (the claim itself carries only
+-- the locator). Part of the claim's searchable text.
+CREATE TABLE IF NOT EXISTS ing_claim_quotes (
+    project_id text NOT NULL REFERENCES projects (project_id),
+    claim_id   text NOT NULL,
+    quote      text NOT NULL,
+    PRIMARY KEY (project_id, claim_id)
+);
+
+-- The canonical text of every committed claim (subject, predicate, object, magnitude,
+-- conditions, quote), for full-text search.
+CREATE TABLE IF NOT EXISTS kg_claim_text (
+    project_id   text NOT NULL REFERENCES projects (project_id),
+    claim_id     text NOT NULL,
+    subject_type text NOT NULL,
+    text         text NOT NULL,
+    text_hash    text NOT NULL,
+    tsv          tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, text)) STORED,
+    PRIMARY KEY (project_id, claim_id)
+);
+CREATE INDEX IF NOT EXISTS kg_claim_text_tsv ON kg_claim_text USING gin (tsv);
+
+-- The name of every entity (with the predicates it appears in), for matching a query to
+-- entities.
+CREATE TABLE IF NOT EXISTS kg_entity_text (
+    project_id  text NOT NULL REFERENCES projects (project_id),
+    entity_id   text NOT NULL,
+    entity_type text NOT NULL,
+    name        text NOT NULL,
+    text        text NOT NULL,
+    text_hash   text NOT NULL,
+    tsv         tsvector GENERATED ALWAYS AS (to_tsvector('english'::regconfig, name)) STORED,
+    PRIMARY KEY (project_id, entity_id)
+);
+CREATE INDEX IF NOT EXISTS kg_entity_text_tsv ON kg_entity_text USING gin (tsv);
+
+-- How far the search index of a project has followed its read models.
+CREATE TABLE IF NOT EXISTS kg_index_state (
+    project_id text   PRIMARY KEY REFERENCES projects (project_id),
+    seq        bigint NOT NULL,
+    model      text
+);
+
+-- The current communities of a project's entity graph (Leiden, two levels) and the summary
+-- claim of each. input_hash decides whether a summary must be written again.
+CREATE TABLE IF NOT EXISTS kg_communities (
+    project_id       text    NOT NULL REFERENCES projects (project_id),
+    community_id     text    NOT NULL,
+    level            integer NOT NULL,
+    parent_id        text,
+    members          text[]  NOT NULL,
+    claim_ids        text[]  NOT NULL,
+    input_hash       text    NOT NULL,
+    summary_claim_id text,
+    PRIMARY KEY (project_id, community_id)
+);
+
+-- Which ledger seq the Apache AGE copy of a project's graph was loaded at (age backend only).
+CREATE TABLE IF NOT EXISTS kg_age_sync (
+    project_id text   PRIMARY KEY REFERENCES projects (project_id),
+    graph      text   NOT NULL,
+    seq        bigint NOT NULL
+);
+
+-- What this schema was last brought up to: the sha256 of schema.sql. ensure_schema applies
+-- the DDL above only when it differs (or a table is missing), so a starting process takes no
+-- table locks on a schema that is already current.
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   text PRIMARY KEY,
+    value text NOT NULL
+);
