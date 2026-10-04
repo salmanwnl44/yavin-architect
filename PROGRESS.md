@@ -1749,6 +1749,39 @@ GET /v1/projects/{pid}/graph/path?from=&to=&max_depth= ; GET /v1/projects/{pid}/
   it committed a claim with (`ing_claim_quotes`) for the claim's searchable text. Search
   never returns it: a hit is the claim and its locator.
 
+### An intermittent deadlock at startup: found in CI, reproduced, fixed
+
+After the exit tests were green, one CI run on the knowledge image failed two session tests
+(`test_sessions.py::test_session_cli` and `test_m7_console.py::test_p3_watch_*`) with
+`psycopg.errors.DeadlockDetected`. Three earlier runs of the same code had passed.
+
+| Step | Result |
+| --- | --- |
+| CI, run 37191610184 on `d08d665`, job test (age-pgvector) | **2 failed**, 371 passed |
+| The failing statement, the same in both | `ensure_schema` in the CLI's `main`: "waits for AccessExclusiveLock on relation (gw_spend); blocked by process B. Process B waits for RowExclusiveLock on relation (gw_calls)" |
+| Reproduce: the two unmodified tests, 12 isolated runs on a frozen checkout of `d08d665`, output kept | **2 failed, 10 passed**, both with that deadlock |
+| Reproduce deterministically | `test_schema_bootstrap.py::test_applying_the_ddl_under_a_writer_is_the_deadlock_and_the_fast_path_avoids_it` |
+| After the fix: the two tests, 100 iterations on a frozen checkout of `9f661ad` | **100 green of 100, 0 failed** |
+
+**Root cause, in the code.** Every process re-applied `schema.sql` when it started. The DDL
+is idempotent but not free: `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, `CREATE INDEX IF NOT
+EXISTS` and `CREATE OR REPLACE TRIGGER` take table locks that conflict with writers, one
+table after another, and hold them until the transaction ends. Step 0 made a gateway
+transaction write `gw_spend` and then `gw_calls` (the reservation and the `started` row
+commit together), and added ALTERs on both tables. A command starting at that moment held
+`gw_calls` and waited for `gw_spend`, while the worker held `gw_spend` and waited for
+`gw_calls`. Postgres broke the cycle by failing one of them; it could as well have been the
+worker's model call.
+
+**The fix.** `ensure_schema` applies the DDL only when it has something to do: the sha256
+of `schema.sql` is kept in `schema_meta`, and the DDL runs when it differs (an upgrade) or
+when a table the schema creates is missing. A process starting on a current schema reads
+two catalog queries and takes no table lock. `architect init-db` forces it. The same rule
+was applied to the pgvector mirror table, which a new index instance used to re-declare on
+first use. Tests: a start under an open writer transaction returns at once; the forced DDL
+under the same writer is the deadlock; a dropped table or a changed hash is applied again;
+four processes starting on an empty schema apply it once.
+
 ### Exit tests
 
 | # | Exit test | Result | Evidence |
@@ -1777,19 +1810,20 @@ K8 uses the mock embedder's 64-d vectors and claims written straight into the re
 (the ledger path would fold grades 10,000 times over); it times the whole search: the query
 embedding, full text, pgvector HNSW, the entity match, the graph expansion and the fusion.
 
-CI output (branch head `4b82d37`, push run 37190781914 on `ubuntu-latest`, with a Temporal
-dev server started by the Temporal CLI; the pull_request run 37190784669 agreed):
+CI output (branch head `9f661ad`, push run 37192278371 on `ubuntu-latest`, with a Temporal
+dev server started by the Temporal CLI; the pull_request run 37192280760 agreed):
 
 ```
-test (age-pgvector)   ================ 373 passed, 5 deselected in 238.53s (0:03:58) =================
-test (plain)          ================ 370 passed, 8 deselected in 197.95s (0:03:17) =================
-fastembed-smoke       ====================== 1 passed, 377 deselected in 2.71s =======================
+test (age-pgvector)   ================ 378 passed, 5 deselected in 234.01s (0:03:54) =================
+test (plain)          ================ 374 passed, 9 deselected in 203.12s (0:03:23) =================
+fastembed-smoke       ====================== 1 passed, 382 deselected in 3.13s =======================
 ```
 
 Nothing failed and nothing was skipped. On the knowledge image (Postgres 16, Apache AGE 1.6,
 pgvector 0.8) the five deselected tests are the four live ones and the fastembed smoke test.
-On the plain Postgres the AGE parity test, the pgvector parity test and K8 are deselected as
-well: they run where the extensions exist.
+On the plain Postgres the AGE parity test, the two pgvector tests and K8 are deselected as
+well: they run where the extensions exist. The K2 and K8 numbers above are from run
+37190781914 (`4b82d37`); on `9f661ad` K8 measured p50 21.7 ms, p95 23.5 ms.
 
 The first CI run of the branch (`9b7b911`, run 37189691150) passed every M8 test on the
 knowledge image and then failed 100 later tests at setup: a test's teardown had dropped an
@@ -1803,6 +1837,8 @@ Local runs on Windows (portable PostgreSQL 16, no extensions: the fallbacks; moc
 | --- | --- | --- |
 | `a88394e` (step 0) | full suite | 340 passed, 4 deselected in 505 s |
 | `9b7b911` | full suite | 368 passed, 8 deselected in 744 s |
+| `d08d665` (before the startup fix) | the two session CLI tests, 12 isolated runs | 10 passed, **2 failed** (deadlock) |
+| `9f661ad` (the fix) | the two session CLI tests, 100 iterations | 100 green |
 
 ## Windows
 

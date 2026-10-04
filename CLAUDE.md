@@ -138,7 +138,9 @@ Do not change the contracts.
   `results/` for live scorecards.
 - `docs/getting-started.md`: how to run all of it, on Windows without Docker and on Linux.
 - `src/architect/api.py`, `src/architect/cli.py`: FastAPI app and the `architect` entrypoint.
-- `src/architect/schema.sql`: all DDL, idempotent, applied by `architect init-db` and on startup.
+- `src/architect/schema.sql`: all DDL, idempotent. Applied on startup only when the schema is
+  not current (a table is missing, or the file's hash in `schema_meta` differs), so a
+  starting process takes no table locks; `architect init-db` forces it.
 
 ## Commands
 
@@ -180,6 +182,8 @@ Tests create a throwaway schema per test inside the database named by
   `checks/catalog.json` and in `REGISTRY`, and unit tests for its pass, fail and empty cases.
 - After a PR merges, delete its remote branch — don't ask.
 - Adding a GraphStore or VectorIndex capability means: both backends, and a parity test.
+- No DDL on a hot path: `CREATE ... IF NOT EXISTS` and `ALTER TABLE` still lock the table.
+  Schema changes go in `schema.sql`; anything created lazily checks the catalog first.
 - Adding an activity means: an idempotency scheme derived from (session, phase, round, step),
   a result the workflow can act on without I/O, and a test in which it is retried or replayed.
 - A flaky test is a defect, in the test or in the code. Reproduce it in a loop with the
