@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,13 +27,6 @@ from architect.projections import COMPROMISING_STATUSES
 # subject entity types the compiler treats as the session's own statements
 REQUIREMENT_TYPES = ("requirement", "constraint")
 GUIDANCE_TYPE = "owner_guidance"
-
-STOPWORDS = frozenset(
-    "the and that with from this into for are must will shall should when then than over "
-    "under each every also only have has been being within without about after before "
-    "between through during which while where their there these those what some such".split()
-)
-_WORD = re.compile(r"[a-z0-9][a-z0-9_./-]{2,}")
 
 
 @dataclass
@@ -79,20 +71,6 @@ class Compiled:
 def estimate_tokens(text: str) -> int:
     """The gateway's estimate: four characters per token."""
     return max(1, math.ceil(len(text) / 4))
-
-
-def words(text: str) -> set[str]:
-    return {w for w in _WORD.findall(text.lower()) if w not in STOPWORDS}
-
-
-def claim_words(claim: dict[str, Any]) -> set[str]:
-    parts = [
-        str(claim["subject"].get("id", claim["subject"].get("literal", ""))),
-        claim["predicate"].replace("_", " "),
-        str(claim["object"].get("id", claim["object"].get("literal", ""))),
-        " ".join(str(k) for k in claim.get("conditions", {})),
-    ]
-    return words(" ".join(parts).replace("-", " ") + " " + " ".join(parts))
 
 
 def _committed_claims(pool: ConnectionPool, project_id: str) -> list[dict[str, Any]]:

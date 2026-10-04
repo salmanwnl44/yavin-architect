@@ -7,6 +7,8 @@ test_gateway_providers.py (G10, G11). No real key is ever used.
 
 from __future__ import annotations
 
+import asyncio
+import dataclasses
 import json
 import logging
 import random
@@ -39,6 +41,7 @@ from architect.gateway.request import GatewayRequest
 from architect.gateway.router import candidates
 from architect.projector import Projector
 from architect.sessions.config import load_session_config
+from architect.sessions.worker import sweep_lost_calls
 from builders import as_candidate, candidate
 from conftest import PROJECT
 from replay_reference import fixture_events
@@ -837,6 +840,32 @@ def test_k0_the_periodic_sweep_abandons_by_age_and_two_sweeps_abandon_once(pool,
     assert config.abandon_after_s == 30.0
     assert load_config().abandon_after_s == load_session_config().heartbeat_seconds == 30
     assert load_session_config().heartbeat_interval_seconds == 10
+
+
+def test_k0_the_worker_sweeps_lost_calls_periodically(pool, config):
+    def die() -> None:
+        raise Died
+
+    gateway = Gateway(
+        pool, dataclasses.replace(config, abandon_after_s=0.0), {"mock": Observing(die)}
+    )
+    with pytest.raises(Died):
+        gateway.call(request(scope=K0_SCOPE))
+    assert [r["status"] for r in calls(pool)] == ["started"]
+
+    async def swept() -> bool:
+        sweeper = asyncio.create_task(sweep_lost_calls(gateway, every_s=0.01))
+        try:
+            for _ in range(1000):  # the abandoned row, once written, stays
+                if [r["status"] for r in calls(pool)] == ["started", "abandoned"]:
+                    return True
+                await asyncio.sleep(0.01)
+            return False
+        finally:
+            sweeper.cancel()
+
+    assert asyncio.run(swept())
+    assert gateway.spend(K0_SCOPE)["abandoned_calls"] == 1
 
 
 def test_k0_a_slow_call_that_was_abandoned_is_put_right_when_it_finishes(pool, config):

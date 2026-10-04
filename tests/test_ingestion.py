@@ -4,6 +4,7 @@ provider. Exit tests I1 to I11 live here."""
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -985,3 +986,47 @@ def test_a_job_stopped_at_its_cap_commits_what_both_passes_finished_and_resumes(
     assert (final["stage"], final["segments_answered"]) == ("done", 2)
     assert pipeline.commit_processed(PROJECT, source.source_id).committed == report.committed
     assert len(events_of(pool, "claim.committed")) == 2
+
+
+def test_a_resumed_job_abandons_the_call_its_dead_run_started(
+    pool, ingestor, store, config, mock_b, tmp_path
+):
+    """M8 step 0: the process dies inside pass A's model call. The call was written ahead, so
+    the run that resumes the job closes it as abandoned, with its reservation charged, and
+    makes the call again."""
+    source = ingest_readme(pool, ingestor, tmp_path)
+
+    class Died(BaseException):
+        pass
+
+    class Dying(MockProvider):
+        def complete(self, call):
+            raise Died
+
+    models = from_mapping(TEST_MODELS)
+    dead = Gateway(pool, models, {"mock": Dying("mock"), "mock-b": mock_b}, sleep=lambda s: None)
+    with pytest.raises(Died):
+        Pipeline(pool, dead, store, config).run(PROJECT, source.source_id)
+
+    def statuses() -> list[str]:
+        with pool.connection() as conn:
+            rows = conn.execute("SELECT status FROM gw_calls ORDER BY ts, call_id").fetchall()
+        return [row["status"] for row in rows]
+
+    assert statuses() == ["started"]
+    mock = MockProvider("mock")
+    base = claim_of(FENCING_LOCATOR, "WAL", "rejects", "stale epoch appends", FENCING_QUOTE)
+    mock.enqueue({"claims": [base]})
+    mock_b.enqueue({"claims": [base]})
+    alive = Gateway(
+        pool,
+        dataclasses.replace(models, abandon_after_s=0.0),
+        {"mock": mock, "mock-b": mock_b},
+        sleep=lambda s: None,
+    )
+    report = Pipeline(pool, alive, store, config).run(PROJECT, source.source_id)
+    assert report.resumed_from == "pass_a" and len(report.committed) == 1
+    assert statuses() == ["started", "abandoned", "started", "ok", "started", "ok"]
+    spend = alive.spend({"session": f"ingest:{report.job_id}"})
+    assert (spend["abandoned_calls"], spend["calls"], spend["reserved_tokens"]) == (1, 3, 0)
+    assert spend["abandoned_tokens"] > 0 and spend["tokens"] > spend["abandoned_tokens"]
