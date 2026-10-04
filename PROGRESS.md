@@ -14,7 +14,7 @@
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 | M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
-| M7 console, golden task #1 | **built**: gate decisions and extend, seed models, the console, golden task gt-001 and its runner; exit tests P1 to P6 green in CI. **Phase 1 exit test: PENDING LIVE RUN** (M7-live) |
+| M7 console, golden task #1 | **built**: gate decisions and extend, seed models, the console, golden task gt-001 and its runner; exit tests P1 to P6 green in CI. M7-live Part 1 (per-element waivers, L3 partial baseline, external kill with heartbeats) merged. **Phase 1 exit test: PENDING LIVE RUN** (M7-live Part 2) |
 
 M1 is complete, C1 froze the contracts at v1.0, M1.1 closed the Arbiter's model gap, M2 built
 the read side, M3 built the checks engine, C2 moved the contracts to v1.1 (a minor version:
@@ -1033,6 +1033,8 @@ curl localhost:8000/v1/projects/P/sources ; curl "localhost:8000/v1/projects/P/c
 
 L3 (manual): put a short document in `tests/live_docs/` (gitignored), set the key in the
 shell (M4, "Live tests"), run `pytest -m live -v -k l3`; it prints counts by grade, drop counts and usd.
+It runs under a usd cap ($2.50, `ARCHITECT_L3_USD_CAP`); reaching the cap commits what both
+passes finished and reports a PARTIAL baseline, and a later run resumes (M7-live Part 1).
 
 ### Exit tests
 
@@ -1272,8 +1274,9 @@ key was not visible to the session that built this.
    <https://arxiv.org/abs/2609.32972v1>, primary category cs.DC, license CC BY 4.0 as read
    from arXiv's own record, 6 pages counted from the file, sha256
    `ceeacf2faebc55a473fee138e9ba083312e3da9066ab826351090d4d35eaeb6c`. It parses into 136
-   segments, so L3 runs under a per-test usd cap: a `budget.updated` of $1.00 on the
-   extraction job's own gateway scope (`ARCHITECT_L3_USD_CAP` overrides). A mock test pins
+   segments, so L3 runs under a per-test usd cap: a `budget.updated` of $1.00 ($2.50 since
+   M7-live Part 1) on the extraction job's own gateway scope (`ARCHITECT_L3_USD_CAP`
+   overrides). A mock test pins
    that such a cap refuses before the provider and that the job resumes.
 
 ### The intermittent S7 test: found, fixed, proven
@@ -1414,9 +1417,11 @@ deciding at the gate, reading the result, and running a golden task.
 - **`--kill-after attack` is the worker ending itself**, right after the attack activity has
   completed and while refusing further activities, rather than an outside kill at an
   arbitrary instant: an activity cut off mid-flight would wait out its 30-minute timeout
-  before Temporal retried it.
+  before Temporal retried it. (M7-live Part 1 added heartbeats and a real outside kill,
+  `--kill-mode external`; this is now `--kill-mode self`.)
 - **A waiver's `target_ref` is the check id** (one waiver per blocking reason, as decided),
-  which waives that check for the model, not for one element.
+  which waives that check for the model, not for one element. (Changed in M7-live Part 1:
+  one waiver per check and element.)
 - **Agent messages have an insertion-order column** (`ag_messages.n`): their `ts` is the
   session clock's origin and cannot order them.
 
@@ -1456,16 +1461,92 @@ only):
 | `93a14e9` (the fix) | the three S7 tests, 100 iterations | 100 green |
 | `8e2d2a9` (Parts A to D) | full suite | 322 passed, 4 deselected in 585 s |
 
+### M7-live Part 1: three fixes (no key needed)
+
+Built on branch `m7-live` in a session where the app's key was again not visible, so the
+live half is still to run. **Phase 1 exit test: PENDING LIVE RUN.**
+
+**1. Waivers name the element.** `approve_with_risks` signs one waiver per (check, element)
+of the package's blocking reasons, with `target_ref` `"<check_id>:<element_id>"`, the form
+the gate already matched. A blocking reason with no element refs gets a whole-check waiver
+(`target_ref` the check id), and a blocking objection keeps its objection id. The targets
+are computed by `activities.waiver_targets`, deduplicated and in order, and the Arbiter key
+of each waiver derives from (session, gate, target), so a retried activity signs nothing
+twice.
+A new element failing the same check after the approval is not covered: the gate blocks on
+it and reports the earlier element as waived.
+
+**A gate defect found on the way.** `runner.recorded(as_of)` read the results whose
+`as_of_seq` was exactly the ledger seq asked for. A re-run of the battery on an unchanged
+head records nothing for the checks whose inputs did not change (the runner is idempotent on
+the inputs hash), so those checks had no row at the new seq and the gate called them
+`not_evaluated`. Two visible effects: after a waiver the gate lost the results it had not
+re-recorded, and a session whose later rounds changed nothing scored its head on a partial
+battery and could pick the draft over the repaired version as its best. `recorded` now takes
+each check's latest result at or before the seq. Three tests fail on the old behaviour.
+
+**2. L3 at its cap is a partial baseline.** The default cap is $2.50. When the gateway
+refuses the call that would cross it, L3 commits what both passes finished
+(`Pipeline.commit_processed`: the candidates of the segments pass B has answered, through
+the same quarantine and the Arbiter, without moving the job's stage) and reports a PARTIAL
+baseline: segments answered of segments with candidates of segments in the document, claims
+by grade, drops, usd and calls. It fails only on errors. Pass B's metrics are now counted
+per segment, so a stopped job reports what it did; a later run with a higher cap resumes
+where it stopped and commits the rest, each claim once.
+
+**3. A real kill.** `architect golden run ... --kill-after attack --kill-mode external`
+(the default with `--live`) kills the worker process from outside: the runner polls the
+ledger, and when it shows the session entering the phase after the attack it terminates the
+worker's process tree (`taskkill /F /T` on Windows, where the interpreter runs behind the
+virtualenv's launcher; `SIGKILL` to the worker's own process group elsewhere) and starts a
+new worker. The worker takes no part in it and gets no chance to clean up. `--kill-mode
+self` (the default in mock mode) is the earlier behaviour, the worker ending itself.
+
+What made an outside kill workable is **activity heartbeats**. Before, an activity cut off
+in mid-flight was retried only when its 30-minute start-to-close timeout ran out. Now every
+activity is scheduled with a heartbeat timeout (`temporal.heartbeat_seconds` in
+`config/presets.yaml`, 30 s), and the activity wrapper beats from a helper thread at a third
+of it for as long as the activity runs, however long a model call takes. When the worker
+dies the beats stop and Temporal retries the activity on another worker within the timeout.
+The retry is safe for the reason every retry is: Arbiter keys and ids derive from
+(session, phase, round, step).
+
+In a mock run a whole session takes about a second, so the first worker of an external
+mock run is started with `--hold-after attack`: once the session has left the attack phase
+it parks inside the next activity (heartbeating) until it is killed. That only fixes where
+the kill lands. A live worker gets no such flag: the kill lands wherever the repair phase
+happens to be, usually in the middle of a model call.
+
+The scorecard records `kill_mode` (`self`, `external` or null) and, for an external kill,
+`events_at_kill`: how many events the ledger held once the worker was dead. Everything
+after them was written by the worker that resumed.
+
+| Fix | Test | Result |
+| --- | --- | --- |
+| 1 | `test_m7_gate_seed.py::test_p1_approve_with_risks_signs_one_human_waiver_per_blocking_check_and_element` (P1's waiver assertions, updated with the owner's authorization) | green |
+| 1 | `test_m7_gate_seed.py::test_p1_a_waiver_covers_its_element_only_and_a_new_one_failing_the_check_is_not_covered` | green |
+| 1 | `test_m7_gate_seed.py::test_p1_waiver_targets_name_elements_and_fall_back_to_the_check_only_without_any` | green |
+| gate | `test_checks_runner.py::test_the_gate_keeps_the_results_a_rerun_did_not_have_to_record_again`, `test_sessions.py::test_the_best_version_is_the_repaired_one_when_later_rounds_change_nothing` | green |
+| 2 | `test_ingestion.py::test_a_job_stopped_at_its_cap_commits_what_both_passes_finished_and_resumes` | green |
+| 2 | L3 itself (`test_ingestion_live.py`), cap $2.50, partial baseline at the cap | not run: no key |
+| 3 | `test_m7_golden.py::test_p6_a_worker_killed_from_outside_in_the_middle_of_an_activity_is_resumed_cleanly` (mock, real dev server) | green |
+| 3 | `test_m7_golden.py::test_the_kill_mode_defaults_to_self_in_mock_and_is_recorded_in_the_scorecard`, `::test_a_phase_is_complete_once_the_ledger_shows_the_session_entering_the_next_one` | green |
+| 3 | `test_sessions.py::test_an_activity_heartbeats_for_as_long_as_it_runs_and_stops_when_it_ends`, `::test_every_activity_of_a_session_is_scheduled_with_the_heartbeat_timeout` | green |
+| | P6 with the worker ending itself, S6, S11 and every other pre-existing test | green |
+
+CI_OUTPUT_PLACEHOLDER
+
 ### M7-live: what remains
 
 Run in a session started from a shell where `ARCHITECT_ANTHROPIC_API_KEY` is set.
 
 1. **Step 0**: `pytest -m live -v`. L1 (gateway), L3 (extraction of the arXiv paper, under
-   its $1 cap), L4 (a quick session). L2 is deselected unless an OpenAI-compatible server is
-   configured. Report each result and its usd, the quarantine rate in L3, the timeline in L4.
+   its $2.50 cap; a partial baseline if the cap is reached), L4 (a quick session). L2 is
+   deselected unless an OpenAI-compatible server is configured. Report each result and its
+   usd, the quarantine rate in L3, the timeline in L4.
 2. **Part E**, each under the $3 cap:
-   `architect golden run gt-001 --mode review --live --kill-after attack` and
-   `architect golden run gt-001 --mode design --live`.
+   `architect golden run gt-001 --mode review --live --kill-after attack` (the kill is
+   external by default) and `architect golden run gt-001 --mode design --live`.
    Review passes when all four flaws are caught in round 1, the resume is clean, a final
    model exists and the session ends with a package. Design passes when a model is produced,
    C-001 passes or every unsatisfied requirement is an open risk, and a package exists.
@@ -1481,8 +1562,8 @@ deselected).
 
 ## Open
 
-1. **M7-live**: the live baseline (L1, L3, L4) and the two live golden runs that decide the
-   Phase 1 exit test. They need `ARCHITECT_ANTHROPIC_API_KEY` in the launching shell.
+1. **M7-live Part 2**: the live baseline (L1, L3, L4) and the two live golden runs that
+   decide the Phase 1 exit test. They need `ARCHITECT_ANTHROPIC_API_KEY` in the launching shell.
 2. **contracts-PROPOSALS.md P-6** (the contract scripts' file encoding) and **P-11** (a
    session status event) stay open; P-7 to P-10 were applied in v1.1. Multi-head branching is
    planned for contracts v1.2 with M11.

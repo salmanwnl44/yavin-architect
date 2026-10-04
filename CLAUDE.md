@@ -64,7 +64,9 @@ Do not change the contracts.
     `workflow.now()`, no randomness, and it imports nothing from the database, the gateway or
     the Arbiter (`tests/test_sessions.py` enforces it). Every activity is idempotent: Arbiter
     keys, version, claim, proposal, task and message ids derive from
-    (session_id, phase, round, step), never from time or a random id. Agents propose and the
+    (session_id, phase, round, step), never from time or a random id. Every activity
+    heartbeats (the wrapper in `activities.py` does it), so one whose worker died is retried
+    within `temporal.heartbeat_seconds`, not after its full timeout. Agents propose and the
     Arbiter decides; its rejections go back to the agent as structured errors for a bounded
     retry. Every agent message is a typed protocol message in the append-only `ag_messages`.
     Waivers are human-only: the Architect may only request one, as an open risk.
@@ -127,6 +129,7 @@ pytest
 docker compose --profile sessions up -d  # Temporal dev server for sessions; then:
 architect worker                         # the session worker (ARCHITECT_TEMPORAL_ADDRESS)
 architect golden run gt-001 --mode review --kill-after attack   # mock; add --live for the real gateway
+                                         # --kill-mode external: an OS-level kill (default with --live)
 ```
 
 The session tests run on Temporal's time-skipping test environment (downloaded on first
