@@ -11,7 +11,12 @@ from typing import Any
 import httpx2 as httpx
 
 from architect.gateway.errors import ProviderError
-from architect.gateway.providers.base import ProviderCall, ProviderResult, redact
+from architect.gateway.providers.base import (
+    EmbedResult,
+    ProviderCall,
+    ProviderResult,
+    redact,
+)
 
 log = logging.getLogger("architect.gateway.openai_compat")
 
@@ -72,6 +77,37 @@ class OpenAICompatProvider:
             tokens_in=int(usage.get("prompt_tokens", 0)),
             tokens_out=int(usage.get("completion_tokens", 0)),
         )
+
+    def embed(self, model: str, texts: list[str], dim: int | None = None) -> EmbedResult:
+        """POST /v1/embeddings: how a local embedding server plugs in."""
+        url = f"{self._base_url}/v1/embeddings"
+        log.debug("POST %s headers=%s model=%s", url, redact(dict(self._client.headers)), model)
+        try:
+            response = self._client.post(url, json={"model": model, "input": texts})
+        except httpx.TimeoutException as error:
+            raise ProviderError(self.name, model, "timed out", retryable=True) from error
+        except httpx.TransportError as error:
+            raise ProviderError(self.name, model, "connection failed", retryable=True) from error
+        if response.status_code != 200:
+            retryable = response.status_code == 429 or response.status_code >= 500
+            raise ProviderError(
+                self.name,
+                model,
+                f"HTTP {response.status_code}",
+                retryable=retryable,
+                status=response.status_code,
+            )
+        data = response.json()
+        try:
+            items = sorted(data["data"], key=lambda item: item["index"])
+            vectors = [[float(x) for x in item["embedding"]] for item in items]
+            usage = data.get("usage") or {}
+        except (KeyError, TypeError, ValueError) as error:
+            raise ProviderError(
+                self.name, model, "malformed embeddings", retryable=False
+            ) from error
+        tokens = int(usage.get("prompt_tokens", usage.get("total_tokens", 0)))
+        return EmbedResult(vectors=vectors, tokens=tokens)
 
     def _post(self, body: dict[str, Any], call: ProviderCall) -> httpx.Response:
         url = f"{self._base_url}/v1/chat/completions"

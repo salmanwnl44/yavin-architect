@@ -21,12 +21,26 @@ tiers:
       family: anthropic-claude
       sampling: false
 
+  # Embeddings (module M8). The first candidate whose provider is registered serves. The
+  # local ONNX provider needs the optional package: pip install -e ".[embeddings]". Without
+  # any embedding provider, retrieval runs on full-text and graph signals alone.
+  embedding:
+    - provider: fastembed
+      model: BAAI/bge-small-en-v1.5
+      family: bge
+      dim: 384
+
 # Appended to every tier, after the candidates above, only when OPENAI_COMPAT_BASE_URL is
 # set. This is how a local vLLM plugs in (the Industrial tier).
 openai_compat:
   model: local-model
   family: local-vllm
   sampling: true
+# The same server's embedding model (POST /v1/embeddings), appended to the embedding tier.
+openai_compat_embedding:
+  model: local-embedding
+  family: local-embedding
+  dim: 384
 
 # USD per million tokens, verified 2026-10-03 from https://platform.claude.com/docs/en/about-claude/pricing
 prices:
@@ -34,6 +48,8 @@ prices:
   claude-sonnet-5-5: { input: 2.00, output: 10.00 }   # verified 2026-10-03 from https://platform.claude.com/docs/en/about-claude/pricing
   claude-opus-5-5: { input: 4.00, output: 20.00 }   # verified 2026-10-03 from https://platform.claude.com/docs/en/about-claude/pricing
   local-model: { input: 0.0, output: 0.0 }                   # VERIFY: local inference is priced by the owner
+  BAAI/bge-small-en-v1.5: { input: 0.0, output: 0.0 }        # local CPU inference: no usage price
+  local-embedding: { input: 0.0, output: 0.0 }               # VERIFY: local inference is priced by the owner
 
 retries:
   max_attempts: 3        # per candidate, on retryable errors (429, 529, 5xx, timeouts)
@@ -49,3 +65,4 @@ concurrency:             # simultaneous in-flight calls per provider
   anthropic: 4
   openai_compat: 4
   mock: 16
+  fastembed: 2

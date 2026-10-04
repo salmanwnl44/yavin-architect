@@ -11,6 +11,7 @@ import yaml
 
 CONFIG_ENV = "ARCHITECT_MODELS_CONFIG"
 OPENAI_COMPAT_URL_ENV = "OPENAI_COMPAT_BASE_URL"
+EMBEDDING_TIER = "embedding"
 # The app's own variable first, so a tool sharing the shell that uses ANTHROPIC_API_KEY for
 # its own auth never picks the app's key up; the conventional name is the fallback.
 ANTHROPIC_KEY_ENVS = ("ARCHITECT_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
@@ -32,6 +33,7 @@ class Candidate:
     model: str
     family: str
     sampling: bool = True  # whether the model accepts a temperature
+    dim: int | None = None  # an embedding model's vector size
 
 
 @dataclass(frozen=True)
@@ -73,10 +75,13 @@ def default_config_path() -> Path:
 def from_mapping(data: dict[str, Any], *, openai_compat_url: str | None = None) -> GatewayConfig:
     compat = data.get("openai_compat")
     tiers: dict[str, tuple[Candidate, ...]] = {}
+    compat_embedding = data.get("openai_compat_embedding")
     for tier, entries in data["tiers"].items():
         candidates = [Candidate(**entry) for entry in entries]
-        if openai_compat_url and compat:
-            candidates.append(Candidate(provider="openai_compat", **compat))
+        # the embedding tier takes the server's embedding model, every other tier its chat model
+        extra = compat_embedding if tier == EMBEDDING_TIER else compat
+        if openai_compat_url and extra:
+            candidates.append(Candidate(provider="openai_compat", **extra))
         tiers[tier] = tuple(candidates)
     prices = {
         model: Price(float(p["input"]), float(p["output"]))

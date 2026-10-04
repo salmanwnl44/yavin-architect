@@ -27,11 +27,26 @@ class ProviderResult:
     tokens_out: int
 
 
+@dataclass(frozen=True)
+class EmbedResult:
+    vectors: list[list[float]]  # one per text, in order
+    tokens: int
+
+
 class Provider(Protocol):
     name: str
 
     def complete(self, call: ProviderCall) -> ProviderResult:
         """One model call. Raises ProviderError(retryable=...) on failure."""
+
+
+class EmbeddingProvider(Protocol):
+    """A provider that can also embed. `dim` is the configured size of the model's vectors."""
+
+    name: str
+
+    def embed(self, model: str, texts: list[str], dim: int | None = None) -> EmbedResult:
+        """One vector per text. Raises ProviderError(retryable=...) on failure."""
 
 
 def redact(headers: dict[str, str]) -> dict[str, str]:

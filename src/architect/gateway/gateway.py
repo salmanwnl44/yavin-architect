@@ -13,7 +13,7 @@ from typing import Any
 
 from psycopg_pool import ConnectionPool
 
-from architect.gateway import cache, replay, router, structured, untrusted
+from architect.gateway import cache, embedding, replay, router, structured, untrusted
 from architect.gateway.budget import Budget, Reservation
 from architect.gateway.config import Candidate, GatewayConfig, anthropic_api_key, load_config
 from architect.gateway.errors import (
@@ -187,6 +187,34 @@ class Gateway:
             except ProviderError as error:
                 failures.append((candidate.provider, candidate.model, str(error)))
         raise AllCandidatesFailed(failures)
+
+    # ------------------------------------------------------------------ embeddings
+    def embed(
+        self,
+        texts: list[str],
+        *,
+        purpose: str,
+        scope: dict[str, str] | None = None,
+        role: str = "indexer",
+        tier: str = embedding.EMBEDDING_TIER,
+    ) -> embedding.Embedded:
+        """One vector per text, from the `embedding` tier: recorded in gw_calls (written
+        ahead), cached by content hash so a text is embedded once per model, and charged to
+        `scope`. Raises NoEligibleModel when no embedding provider is configured."""
+        return embedding.embed(
+            self, list(texts), purpose=purpose, scope=scope, role=role, tier=tier
+        )
+
+    def can_embed(self, tier: str = embedding.EMBEDDING_TIER) -> bool:
+        """Whether a registered provider can serve the embedding tier."""
+        return bool(embedding.embedding_candidates(self, tier))
+
+    def embedding_model(
+        self, tier: str = embedding.EMBEDDING_TIER
+    ) -> tuple[str, int | None] | None:
+        """(model, dim) of the candidate that would embed, or None."""
+        candidates = embedding.embedding_candidates(self, tier)
+        return (candidates[0].model, candidates[0].dim) if candidates else None
 
     # ------------------------------------------------------------------ one candidate
     def _serve(
@@ -452,6 +480,10 @@ def default_providers() -> dict[str, Provider]:
         from architect.gateway.providers.openai_compat import OpenAICompatProvider
 
         providers["openai_compat"] = OpenAICompatProvider()
+    from architect.gateway.providers import fastembed
+
+    if fastembed.available():
+        providers["fastembed"] = fastembed.FastEmbedProvider()
     return providers
 
 
