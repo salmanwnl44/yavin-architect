@@ -23,12 +23,18 @@ from architect.model_fold import (
     child_of,
     empty_model,
 )
-from architect.state import ArbiterState
+from architect.state import MAIN, ArbiterState
 
 Event = dict[str, Any]
 
 # §7 no-silent-promotion: these statuses are only reachable through a recorded experiment.
 PROMOTION_STATUSES = frozenset({"measured", "observed"})
+# contracts v1.2 (P-11): the decisions at a human gate that only a human takes
+HUMAN_DECISIONS = frozenset({"approve", "approve_with_risks", "reject"})
+
+
+def _branch(event: Event) -> str:
+    return event["payload"].get("branch", MAIN)
 
 
 @dataclass(frozen=True)
@@ -205,12 +211,19 @@ def _created_model(event: Event, state: ArbiterState) -> Model:
 def _check_model_version_created(event: Event, state: ArbiterState) -> None:
     parent = event["payload"].get("parent")
     if parent is None:
-        head = state.model_head()
+        head = state.model_head(_branch(event))
         if head is not None:
             raise Rejection(
                 "DUPLICATE_GENESIS",
                 f"a genesis version needs an empty model; the head is already {head}",
                 "$.payload",
+            )
+        if state.has_model_versions():
+            raise Rejection(
+                "BRANCH_NEEDS_PARENT",
+                f"branch {_branch(event)!r} is new and the project already has model versions: "
+                "its first version must name a committed parent",
+                "$.payload.parent",
             )
     elif state.model(parent) is None:
         raise Rejection(
@@ -223,7 +236,9 @@ def _check_model_version_created(event: Event, state: ArbiterState) -> None:
 
 
 def _apply_model_version_created(event: Event, state: ArbiterState) -> None:
-    state.add_model_version(event["payload"]["version_id"], _created_model(event, state))
+    state.add_model_version(
+        event["payload"]["version_id"], _created_model(event, state), _branch(event)
+    )
 
 
 # model.patch_proposed / model.patch_committed
@@ -242,8 +257,18 @@ def _check_patch(event: Event, state: ArbiterState) -> None:
             f"payload.base_version is {base} but the patch targets {patch['base_version']}",
             "$.payload.patch.base_version",
         )
-    head = state.model_head()
+    branch = _branch(event)
+    head = state.model_head(branch)
     if base != head:
+        base_branch = state.version_branch(base)
+        if base_branch is not None and base_branch != branch:
+            raise Rejection(
+                "BASE_NOT_BRANCH_HEAD",
+                f"base_version {base} is a version of branch {base_branch!r}, not of "
+                f"{branch!r} (whose head is {head}); a patch applies to the head of its own "
+                "branch",
+                "$.payload.base_version",
+            )
         raise Rejection(
             "BASE_MOVED",
             f"base_version {base} is not the model head ({head}); refetch the head and rebase",
@@ -296,7 +321,9 @@ def _apply_model_patch_proposed(event: Event, state: ArbiterState) -> None:
 
 
 def _apply_model_patch_committed(event: Event, state: ArbiterState) -> None:
-    state.add_model_version(event["payload"]["version_id"], _patched_model(event, state))
+    state.add_model_version(
+        event["payload"]["version_id"], _patched_model(event, state), _branch(event)
+    )
 
 
 # objection.raised
@@ -370,6 +397,68 @@ def _check_merge_reverted(event: Event, state: ArbiterState) -> None:
         )
 
 
+def _apply_decision_recorded(event: Event, state: ArbiterState) -> None:
+    state.add_ref(event["payload"]["adr_id"], "decision")
+
+
+# session.status_changed (contracts v1.2, P-11)
+def _check_session_status_changed(event: Event, state: ArbiterState) -> None:
+    decision = event["payload"].get("decision")
+    if decision in HUMAN_DECISIONS and event["actor"]["kind"] != "human":
+        raise Rejection(
+            "DECISION_NOT_HUMAN",
+            f"the decision {decision} at a human gate must come from a human actor, not "
+            f"{event['actor']['kind']}",
+            "$.actor.kind",
+        )
+
+
+# finding.raised / finding.resolved (contracts v1.2, P-12)
+def _check_finding_raised(event: Event, state: ArbiterState) -> None:
+    payload = event["payload"]
+    for i, ref in enumerate(payload["refs"]):
+        if not state.ref_resolves(ref):
+            raise Rejection(
+                "UNKNOWN_REF",
+                f"ref {ref} names no committed claim, source, model version, decision, model "
+                "element or entity of this project",
+                f"$.payload.refs[{i}]",
+            )
+    for i, claim_id in enumerate(payload.get("evidence_claims", ())):
+        _require_claim(state, claim_id, f"$.payload.evidence_claims[{i}]")
+    if state.finding_exists(payload["finding_id"]):
+        raise Rejection(
+            "DUPLICATE_FINDING_ID",
+            f"finding {payload['finding_id']} was already raised in this project",
+            "$.payload.finding_id",
+        )
+    already = state.open_finding_with(payload["dedupe_key"])
+    if already is not None:
+        raise Rejection(
+            "DUPLICATE_FINDING",
+            f"open finding {already} has the same dedupe_key: the same thing was already found",
+            "$.payload.dedupe_key",
+        )
+
+
+def _apply_finding_raised(event: Event, state: ArbiterState) -> None:
+    state.open_finding(event["payload"]["finding_id"], event["payload"]["dedupe_key"])
+
+
+def _check_finding_resolved(event: Event, state: ArbiterState) -> None:
+    finding_id = event["payload"]["finding_id"]
+    if not state.finding_is_open(finding_id):
+        raise Rejection(
+            "FINDING_NOT_OPEN",
+            f"finding {finding_id} was never raised or is already resolved",
+            "$.payload.finding_id",
+        )
+
+
+def _apply_finding_resolved(event: Event, state: ArbiterState) -> None:
+    state.close_finding(event["payload"]["finding_id"])
+
+
 _SCHEMA_ONLY = Rule(_nothing, _nothing)
 
 RULES: dict[str, Rule] = {
@@ -383,7 +472,7 @@ RULES: dict[str, Rule] = {
     "model.patch_proposed": Rule(_check_model_patch_proposed, _apply_model_patch_proposed),
     "model.patch_committed": Rule(_check_model_patch_committed, _apply_model_patch_committed),
     "model.version_created": Rule(_check_model_version_created, _apply_model_version_created),
-    "decision.recorded": Rule(_check_decision_recorded, _nothing),
+    "decision.recorded": Rule(_check_decision_recorded, _apply_decision_recorded),
     "objection.raised": Rule(_check_objection_raised, _apply_objection_raised),
     "objection.resolved": Rule(_check_objection_resolved, _apply_objection_resolved),
     "waiver.signed": Rule(_check_waiver_signed, _nothing),
@@ -392,4 +481,7 @@ RULES: dict[str, Rule] = {
     "session.phase_changed": _SCHEMA_ONLY,
     "session.checkpoint": _SCHEMA_ONLY,
     "budget.updated": _SCHEMA_ONLY,
+    "session.status_changed": Rule(_check_session_status_changed, _nothing),
+    "finding.raised": Rule(_check_finding_raised, _apply_finding_raised),
+    "finding.resolved": Rule(_check_finding_resolved, _apply_finding_resolved),
 }

@@ -6,15 +6,17 @@ says what has landed and how to run it.
 
 ## Ground truth
 
-`phase0-contracts/` is **FROZEN at v1.1** (`phase0-contracts/CHANGELOG.md` lists what changed
-from the v0.1 draft and from v1.0). Never edit, reformat, lint-fix or add to anything in it.
+`phase0-contracts/` is **FROZEN at v1.2** (`phase0-contracts/CHANGELOG.md` lists what changed
+from the v0.1 draft, from v1.0 and from v1.1). Never edit, reformat, lint-fix or add to
+anything in it; a new version is a module of its own, sanctioned by the owner.
 Read it before coding, in this order: `README.md`, the five `*.schema.json` files,
 `fixture/fixture_ledger.jsonl`, `fixture/replay.py`.
 
 `fixture/replay.py` is the reference semantics: the Arbiter must refuse every ledger
 `replay.py` refuses, and accept what it accepts except where the contracts README lists a
 rule as Arbiter-enforced (model version parents and uniqueness, the model fold, proposal id
-uniqueness).
+uniqueness). Since v1.2 it folds model versions per branch and holds findings and session
+decisions to their rules.
 
 If a contract blocks you, log the friction in `contracts-PROPOSALS.md` and work around it.
 Do not change the contracts.
@@ -42,6 +44,9 @@ Do not change the contracts.
    are rebuildable from the ledger alone (`architect rebuild-projections`). The projector
    never writes an event and never calls the Arbiter. The fold is deterministic: no
    wall-clock values and no generated ids. The GET endpoints over them read `proj_*` only.
+   `ses_sessions` is one of them since contracts v1.2: sessions say everything through
+   events (`session.status_changed` for every status change and every gate decision), and
+   no session module writes the table. A project's head is the head of branch `main`.
 7. **Checks are pure.** A check is `check(model, ctx, params) -> CheckOutcome` with no
    database, network, clock or randomness, and imports nothing from the api, db, Arbiter or
    projector modules (`tests/test_architecture.py` enforces it). The runner records every
@@ -119,7 +124,7 @@ Do not change the contracts.
   every side effect; `agent.py` the Architect agent v1 (prompts, output schemas, protocol
   messages, `ag_messages`); `compiler.py` the Context Compiler; `linter.py` the requirement
   linter; `worker.py` the Temporal worker; `service.py` the client side (start, signal,
-  query, the `ses_sessions` read model); `config/presets.yaml` the presets.
+  query, reads of the `ses_sessions` projection); `config/presets.yaml` the presets.
 - `src/architect/knowledge/`: the knowledge plane (M8). `graph.py` what the graph is, the
   GraphStore interface and its SQL backend; `graph_age.py` the Apache AGE backend;
   `vectors.py` the VectorIndex interface, exact and pgvector; `index.py` the search index

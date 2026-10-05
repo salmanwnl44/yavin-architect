@@ -11,6 +11,7 @@
 | M2 projections | **done**: all nine exit tests green in CI; `proj_*` read models, projector, read API |
 | M3 checks engine | **done**: 13 L0/L1 checks, the runner, the gate, CLI and API; all ten exit tests green in CI |
 | C2 contracts v1.1 | **done**: P-7 to P-10 applied, additive only; contracts FROZEN v1.1; CI green |
+| C3 contracts v1.2 | **done**: findings (P-12), session status (P-11), model branches; additive only; contracts FROZEN v1.2; `ses_sessions` is a projection |
 | M4 model gateway | **done**: the one path to any LLM; all twelve exit tests green in CI on the mock provider |
 | M5 ingestion + extraction | **done**: sources, segments, two-pass extraction, quarantine, grades, injection suite; all eleven exit tests green in CI |
 | M6 design sessions | **done**: Temporal workflow over the nine phases, Architect agent v1, Context Compiler; all twelve exit tests green in CI, including the real-dev-server job |
@@ -1839,6 +1840,76 @@ Local runs on Windows (portable PostgreSQL 16, no extensions: the fallbacks; moc
 | `9b7b911` | full suite | 368 passed, 8 deselected in 744 s |
 | `d08d665` (before the startup fix) | the two session CLI tests, 12 isolated runs | 10 passed, **2 failed** (deadlock) |
 | `9f661ad` (the fix) | the two session CLI tests, 100 iterations | 100 green |
+
+## Contracts v1.2 (module C3)
+
+The sanctioned v1.1 to v1.2 change set, authorised by the owner on 2026-10-04 with module M9.
+A minor version under the v1.1 rule: optional fields and NEW event types only, so every
+document valid under v1.1 is valid under v1.2; the schema `$id`s keep `/v1/`; the fixture
+ledger is byte-identical (sha256 `e62ec172…edaf4b`) and `replay.py` prints the same output
+on it. `phase0-contracts/CHANGELOG.md` is the record.
+
+| Change | In the contracts | In the code |
+| --- | --- | --- |
+| P-12 findings | `finding.raised` and `finding.resolved`; `fnd_` ids; a finding is never a fact | Arbiter rules and `arb_findings`, `arb_refs` (what a ref may name: the entities claims name, the elements of committed versions, decisions); `proj_findings` |
+| P-11 session status | `session.status_changed` (status, outcome, decision, reason, package_ref, and for an exact rebuild: refused, gate_verdict, preset, limits, brief_source_id); `session.checkpoint.package_ref`; `session.phase_changed.round` | sessions emit one for every status change, every gate decision (signed by the human) and every refused decision; `ses_sessions` is folded by the projector and no session module writes it |
+| Branches (from P-4) | optional `branch` (default `main`) on the three model events; one head per branch | `arb_model_heads` keyed by branch, `arb_model_versions.branch`, `proj_model_versions.branch`; every reader's "head" is main's |
+
+Codes added with contracts v1.2, each with a refusal test proving nothing was written:
+`UNKNOWN_REF` (a finding's ref names nothing committed), `DUPLICATE_FINDING_ID`,
+`DUPLICATE_FINDING` (an open finding has the same `dedupe_key`), `FINDING_NOT_OPEN`,
+`DECISION_NOT_HUMAN` (approve, approve_with_risks or reject from a non-human actor),
+`BASE_NOT_BRANCH_HEAD` (a patch based on another branch's version; `BASE_MOVED` stays the
+code for an earlier version of the same branch), `BRANCH_NEEDS_PARENT` (a parentless version
+on a new branch of a project that already has versions). The two `DUPLICATE_*` are 409, the
+rest 422.
+
+Decisions worth knowing:
+
+- **`session.status_changed` has five optional fields beyond the brief's six.** The brief
+  asked for `ses_sessions` to be rebuilt EXACTLY from the ledger, and the row holds a
+  preset, limits, the brief's source, the gate verdict and the last refused decision. Each
+  needed an event to come from. They are typed fields, not a free-form object.
+- **`status` is a string, not an enum.** A later module can add a status without a new
+  contract version; `decision` and `gate_verdict` are enums.
+- **A refused decision is an event** (`refused: true`), signed by the human who asked.
+- **Timestamps in the row are event timestamps.** The session's first status event carries
+  the session clock's origin as its `ts`, so `started_at` is what it was; `updated_at` is
+  the `ts` of the last event folded, never the wall clock of the fold.
+- **The package reaches the row through the ledger.** The checkpoint that follows the
+  package carries `package_ref`; no extra event was added for it.
+- **A session ledger written before v1.2 has no status events, so it folds to no row.**
+- **Upgrading a database.** `arb_refs` is filled as events commit; for a ledger that
+  predates v1.2 run `architect rebuild-state` once so earlier claims, elements and
+  decisions become referable.
+
+Existing tests whose assertions v1.2 contradicted, updated with the owner's authorization:
+`test_contracts.py::test_event_types_match_the_payload_dispatch` (19 event types, now 22),
+`test_contracts_v11.py::test_the_schemas_still_say_v1` (README says v1.2),
+`test_cli.py::test_rebuild_state_reports_zero_diff_on_a_healthy_ledger` (the v1.1 sample
+ledger has nothing for `arb_findings`), `test_sessions.py::test_s1_*` (the ledger now ends
+with the session's status events) and the S8 helper `_content` (the package's content hash
+is run-specific, like the spend it contains, and is left out of the comparison).
+
+| # | Exit test | Result | Evidence |
+| --- | --- | --- | --- |
+| X1 | Fixture byte-identical; `validate.py` and `replay.py` green; fixture output unchanged | green | `test_contracts_v12.py::test_x1_*` (2), `test_contracts_v11.py::test_replay_prints_what_progress_recorded` (unchanged) |
+| X2 | Every existing instance validates under v1.2 (collected programmatically); the new fields are optional and typed | green | `::test_x2_*` (2) |
+| X3 | Two branches from one parent, patches on each head; replay, Arbiter and projector agree; a patch on a non-head version of its branch is refused | green | `::test_x3_*` (2) |
+| X4 | Dropping `ses_sessions` and rebuilding from the ledger reproduces it exactly; human-only decisions | green | `::test_x4_*` (2) |
+| X5 | Every Arbiter refusal of v1.2, nothing written; replay refuses what the Arbiter refuses | green | `::test_x5_*` (5), `::test_every_new_event_type_has_a_rule_and_a_projection` |
+
+CI output (branch head `cf587ec`, push run 37273577075; the pull_request run 37273609901
+agreed):
+
+```
+test (age-pgvector)   ================ 392 passed, 5 deselected in 247.49s (0:04:07) =================
+test (plain)          ================ 388 passed, 9 deselected in 208.92s (0:03:28) =================
+fastembed-smoke       ====================== 1 passed, 396 deselected in 3.90s =======================
+```
+
+Nothing failed and nothing was skipped. Local full suite on Windows at the same code: 388
+passed, 9 deselected.
 
 ## Windows
 

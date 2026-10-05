@@ -131,6 +131,11 @@ class DesignSessionWorkflow:
         self.gate_open: str | None = None  # "after_attack" | "end" while a human gate waits
         self.decisions: list[dict[str, Any]] = []
         self.refusals: list[dict[str, Any]] = []
+        self.refusal_signers: list[str | None] = []
+        # what the ledger has been told (session.status_changed, contracts v1.2)
+        self.status_events = 0
+        self.refusals_recorded = 0
+        self.recorded: tuple[Any, ...] = ("running", None, None, None)
 
     # ------------------------------------------------------------------ signals and queries
     @workflow.signal
@@ -174,6 +179,7 @@ class DesignSessionWorkflow:
 
     def _refuse(self, decision: dict[str, Any], why: str) -> None:
         self.refusals.append({"decision": decision["kind"], "why": why})
+        self.refusal_signers.append(decision.get("signer"))
 
     @workflow.query
     def status(self) -> dict[str, Any]:
@@ -240,9 +246,7 @@ class DesignSessionWorkflow:
         self.failure = reason
         self.finished = True
         try:
-            await self._act(
-                "record_status", {"status": "failed", "outcome": "failed", "failure": reason}
-            )
+            await self._record()
         except Exception:  # noqa: BLE001 - the failure itself is what gets reported
             pass
 
@@ -260,6 +264,7 @@ class DesignSessionWorkflow:
         self.brief_source_id = started["brief_source_id"]
         self.spend = started["spend"]
 
+        decided: dict[str, Any] | None = None  # the human decision that ended the session
         while True:
             await self._loop(gates)
             self.active = False
@@ -303,6 +308,7 @@ class DesignSessionWorkflow:
             if decision is None:
                 self.status = self.outcome = "cancelled"
                 break
+            decided = decision
             if decision["kind"] == "approve":
                 self.status = "approved"
                 break
@@ -323,9 +329,10 @@ class DesignSessionWorkflow:
             if decision["kind"] == "reject":
                 self.status = "rejected"
                 break
+            decided = None
             await self._extend(decision)
         self.finished = True
-        await self._record()
+        await self._record(decided)
 
     # ------------------------------------------------------------------ the phases
     async def _setup(self) -> None:
@@ -396,7 +403,7 @@ class DesignSessionWorkflow:
                     if decision["kind"] == "reject":
                         raise _Stop("rejected", "rejected at the after-attack gate")
                     self.status = "running"
-                    await self._record()
+                    await self._record(decision)
                 if attack["gate"]["verdict"] == "ALLOWED":
                     self.rounds.append(record)
                     raise _Stop("allowed")
@@ -553,7 +560,7 @@ class DesignSessionWorkflow:
         self.stop_reason = self.stop_detail = self.outcome = None
         self.package_risks = None
         self.status = "running"
-        await self._record()
+        await self._record(decision, limits=limits)
 
     # ------------------------------------------------------------------ steps
     def _base(self) -> dict[str, Any]:
@@ -690,26 +697,56 @@ class DesignSessionWorkflow:
                 "phase": self.phase or "frame",
                 "best_version": self.best_version,
                 "open_risk_ids": self.risk_ids(),
+                "package_key": self.package_key,
                 "key": key,
             },
         )
         self.spend = result["spend"]
         self.last_checkpoint = workflow.now()
 
-    async def _record(self) -> None:
+    async def _record(
+        self, decision: dict[str, Any] | None = None, limits: dict[str, Any] | None = None
+    ) -> None:
+        """Put the session's status in the ledger: one session.status_changed when the
+        status, outcome, package or gate verdict changed or a decision was taken, and one
+        (marked refused) for every decision refused since the last record."""
+        state = (self.status, self.outcome, self.package_key, self.gate_verdict)
+        emit = decision is not None or state != self.recorded
+        refusals = [
+            refusal | {"signer": signer, "n": n}
+            for n, (refusal, signer) in enumerate(
+                zip(self.refusals, self.refusal_signers, strict=True)
+            )
+            if n >= self.refusals_recorded
+        ]
+        if not emit and not refusals:
+            return
+        if emit:
+            self.status_events += 1
+        reason = self.failure if self.status == "failed" else self.stop_reason
+        if decision is not None and decision.get("reason"):
+            reason = str(decision["reason"]).strip()
         await self._act(
             "record_status",
             {
+                "n": self.status_events,
+                "emit": emit,
                 "status": self.status,
                 "outcome": self.outcome,
-                "phase": self.phase,
-                "round": self.round,
-                "best_version": self.best_version,
-                "open_risk_ids": self.risk_ids(),
+                "reason": reason,
                 "package_key": self.package_key,
-                "last_refusal": self.refusals[-1] if self.refusals else None,
+                "gate_verdict": self.gate_verdict,
+                "limits": limits,
+                "decision": (
+                    {"kind": decision["kind"], "signer": decision.get("signer")}
+                    if decision is not None
+                    else None
+                ),
+                "refusals": refusals,
             },
         )
+        self.recorded = state
+        self.refusals_recorded = len(self.refusals)
 
     async def _heartbeat(self) -> None:
         """A checkpoint at least every `checkpoint_minutes` of workflow time while a phase

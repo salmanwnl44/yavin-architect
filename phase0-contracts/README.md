@@ -1,4 +1,4 @@
-# Yavin Architect — Phase 0 Contracts (FROZEN v1.1)
+# Yavin Architect — Phase 0 Contracts (FROZEN v1.2)
 
 These five schemas are the frozen interfaces everything in Phase 1 builds against.
 They are the machine-readable form of the architecture spec; nothing in them is new —
@@ -14,10 +14,11 @@ each file implements a section of the spec, and the spec wins on any conflict un
 
 ## Status and versioning rules
 
-- **Status: FROZEN v1.1** — signed off by the owner. `CHANGELOG.md` lists what changed from
-  the v0.1 draft (v1.0) and from v1.0 (v1.1). v1.1 is a minor version: it only adds optional
-  fields and documents rules, so every document valid under v1.0 is valid under v1.1, and the
-  schema `$id`s keep the `/v1/` path.
+- **Status: FROZEN v1.2** — signed off by the owner. `CHANGELOG.md` lists what changed from
+  the v0.1 draft (v1.0), from v1.0 (v1.1) and from v1.1 (v1.2). v1.1 and v1.2 are minor
+  versions: they only add optional fields, new event types and documented rules, so every
+  document valid under v1.0 or v1.1 is valid under v1.2, and the schema `$id`s keep the `/v1/`
+  path.
 - A frozen contract never changes in place. A change is a **new version** plus a
   migration event in the ledger (the §5-P2 discipline applied to the contracts themselves).
 - v1.0 keeps each file **self-contained** (shared enums like `EpistemicStatus`, `Severity`,
@@ -43,8 +44,17 @@ refuses events that break them.
   while the project has no head (`DUPLICATE_GENESIS`). With `parent`, the parent must be a
   model version already committed in the same project (`UNKNOWN_MODEL_VERSION`), and the new
   version's model is a copy of the parent's (v1.1, P-7; `fixture/replay.py` folds it so).
-  Either way the new version becomes the project's single head. Multiple heads for
-  alternative designs are planned for v1.2, alongside the alternatives tournament (M11).
+  Either way the new version becomes the head of its branch.
+- **Model branches (v1.2).** `model.version_created`, `model.patch_proposed` and
+  `model.patch_committed` carry an optional `branch` (default `"main"`), and a project has
+  one head per branch. A patch's `base_version` must be the head of its branch: `BASE_MOVED`
+  when it is an earlier version of that branch (refetch and rebase), `BASE_NOT_BRANCH_HEAD`
+  when it is not a version of that branch at all (another branch's version, or a branch
+  that has no head). A branch begins with a `model.version_created` that names it and a
+  committed parent on any branch; a version without a parent is the project's genesis and
+  is refused once the project has any version (`DUPLICATE_GENESIS` on a branch that has a
+  head, `BRANCH_NEEDS_PARENT` on a new one). A ledger without the field means exactly what
+  it meant under v1.1. `fixture/replay.py` folds per branch and reports main's head.
 - **Model versions fold deterministically (v1.1, P-8).** A `model.patch_committed` or
   `model.patch_proposed` must apply to the head's model: every `update_element` or
   `remove_element` target exists (`PATCH_TARGET_MISSING`), and the resulting model validates
@@ -60,6 +70,22 @@ refuses events that break them.
 - **Check results name their subject (v1.1, P-10).** A `check.result` carries
   `model_version` and `as_of_seq`; results without them (v1.0) are read as judging the head
   of their time.
+- **Session status (v1.2, P-11).** `session.status_changed` records every change of a
+  session's status and every decision at a human gate; with `refused: true` it records a
+  decision that was asked for and not applied. An event whose `decision` is `approve`,
+  `approve_with_risks` or `reject` must come from a human actor (`DECISION_NOT_HUMAN`).
+  Together with `session.phase_changed` (which gained `round`), `session.checkpoint` (which
+  gained `package_ref`), `budget.updated` and `waiver.signed`, the session read model is a
+  projection of the ledger.
+- **Findings (v1.2, P-12).** A `finding.raised` is a question, a risk or a hypothesis, never
+  a fact: it is not a claim and nothing may cite it as evidence. Each of its `refs` must
+  resolve (`UNKNOWN_REF`) to a committed claim, a source, a decision, a model version, an
+  element of a committed model version, or an entity: the subject or object of a committed
+  claim, named `ent:<entity_type>:<id>` or by its bare `id`. Its `evidence_claims` must be
+  committed claims (`UNKNOWN_CLAIM`). A `finding_id` is used once (`DUPLICATE_FINDING_ID`),
+  and no two OPEN findings share a `dedupe_key` (`DUPLICATE_FINDING`). `finding.resolved`
+  closes an open finding (`FINDING_NOT_OPEN` otherwise). `fixture/replay.py` holds a ledger
+  to the same rules.
 - **Proposal ids.** `claim.proposed` and `model.patch_proposed` share one `proposal_id`
   namespace per project, and an id is used at most once. `from_proposal` on
   `claim.committed` must name a claim proposal, and on `model.patch_committed` a model patch
@@ -92,4 +118,4 @@ coding agents). The harness therefore carries its own benchmark, reported per re
 ULID-style ids with typed prefixes: `evt_` event, `clm_` claim, `src_` source, `cmp_`
 component, `if_` interface, `flw_` flow, `req_` requirement, `adr_` decision, `obj_`
 objection, `chk_` check result, `ses_` session, `tsk_` task, `mv_` model version,
-`msg_` protocol message, `exp_` experiment, `wvr_` waiver.
+`msg_` protocol message, `exp_` experiment, `wvr_` waiver, `fnd_` finding (v1.2).

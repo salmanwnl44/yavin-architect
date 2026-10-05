@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://yavin.dev/contracts/v1/ledger_events.schema.json",
   "title": "LedgerEvent",
-  "description": "One event in a project's append-only ledger (spec §5-P2, §6). Every state change in the platform is exactly one of these, committed by the Arbiter. Payload object shapes are governed per type; objects marked 'see claim.schema.json' etc. are enforced by convention in v1.0. `format` keywords are assertions.",
+  "description": "One event in a project's append-only ledger (spec §5-P2, §6). Every state change in the platform is exactly one of these, committed by the Arbiter. Payload object shapes are governed per type; objects marked 'see claim.schema.json' etc. are enforced by convention in v1.0. `format` keywords are assertions. v1.2 adds three event types (session.status_changed, finding.raised, finding.resolved) and optional fields; every v1.1 event is a valid v1.2 event.",
   "type": "object",
   "additionalProperties": false,
   "required": ["event_id", "project_id", "seq", "ts", "actor", "type", "payload", "idempotency_key"],
@@ -47,7 +47,10 @@
     { "properties": { "type": { "const": "experiment.recorded" }, "payload": { "$ref": "#/$defs/ExperimentRecorded" } } },
     { "properties": { "type": { "const": "session.phase_changed" }, "payload": { "$ref": "#/$defs/SessionPhaseChanged" } } },
     { "properties": { "type": { "const": "session.checkpoint" }, "payload": { "$ref": "#/$defs/SessionCheckpoint" } } },
-    { "properties": { "type": { "const": "budget.updated" }, "payload": { "$ref": "#/$defs/BudgetUpdated" } } }
+    { "properties": { "type": { "const": "budget.updated" }, "payload": { "$ref": "#/$defs/BudgetUpdated" } } },
+    { "properties": { "type": { "const": "session.status_changed" }, "payload": { "$ref": "#/$defs/SessionStatusChanged" } } },
+    { "properties": { "type": { "const": "finding.raised" }, "payload": { "$ref": "#/$defs/FindingRaised" } } },
+    { "properties": { "type": { "const": "finding.resolved" }, "payload": { "$ref": "#/$defs/FindingResolved" } } }
   ],
   "$defs": {
     "EventType": {
@@ -57,7 +60,8 @@
         "model.patch_proposed", "model.patch_committed", "model.version_created",
         "decision.recorded", "objection.raised", "objection.resolved", "waiver.signed",
         "check.result", "experiment.recorded",
-        "session.phase_changed", "session.checkpoint", "budget.updated"
+        "session.phase_changed", "session.checkpoint", "budget.updated",
+        "session.status_changed", "finding.raised", "finding.resolved"
       ]
     },
     "EpistemicStatus": {
@@ -124,33 +128,36 @@
     },
     "ModelPatchProposed": {
       "type": "object", "additionalProperties": false,
-      "description": "A proposed patch is held to the rules of a committed one (Arbiter-enforced): base_version must be the head (BASE_MOVED), every update_element or remove_element target must exist in the head's model (PATCH_TARGET_MISSING), and the model the patch would produce must validate against system_model.schema.json (INVALID_MODEL_RESULT).",
+      "description": "A proposed patch is held to the rules of a committed one (Arbiter-enforced): base_version must be the head of its branch (BASE_MOVED when the branch's head has moved on; v1.2: BASE_NOT_BRANCH_HEAD when the base is not a version of that branch), every update_element or remove_element target must exist in the head's model (PATCH_TARGET_MISSING), and the model the patch would produce must validate against system_model.schema.json (INVALID_MODEL_RESULT).",
       "required": ["proposal_id", "base_version", "patch"],
       "properties": {
         "proposal_id": { "type": "string", "description": "Unique within the project across claim proposals and model patch proposals, which share one namespace. Arbiter-enforced." },
         "base_version": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
         "patch": { "type": "object", "description": "ModelPatch ops per agent_protocol.schema.json." },
-        "proposer_msg_id": { "type": "string" }
+        "proposer_msg_id": { "type": "string" },
+        "branch": { "type": "string", "minLength": 1, "default": "main", "description": "v1.2: the model branch this event belongs to. Absent means \"main\", so a ledger without the field means exactly what it meant under v1.1." }
       }
     },
     "ModelPatchCommitted": {
       "type": "object", "additionalProperties": false,
-      "description": "Commits version_id as the model that applying patch to base_version's model produces. Arbiter-enforced: base_version is the head (BASE_MOVED); every update_element or remove_element target exists (PATCH_TARGET_MISSING); the resulting model validates against system_model.schema.json (INVALID_MODEL_RESULT); version_id was never used in the project (DUPLICATE_VERSION_ID).",
+      "description": "Commits version_id as the model that applying patch to base_version's model produces, and makes it the head of its branch. Arbiter-enforced: base_version is the head of the branch (BASE_MOVED when the branch's head has moved on; v1.2: BASE_NOT_BRANCH_HEAD when the base is not a version of that branch); every update_element or remove_element target exists (PATCH_TARGET_MISSING); the resulting model validates against system_model.schema.json (INVALID_MODEL_RESULT); version_id was never used in the project (DUPLICATE_VERSION_ID).",
       "required": ["version_id", "base_version", "patch"],
       "properties": {
         "version_id": { "type": "string", "pattern": "^mv_[0-9A-Za-z]{10,26}$" },
         "base_version": { "type": "string" },
         "patch": { "type": "object" },
-        "from_proposal": { "type": "string", "description": "The proposal_id of a committed model.patch_proposed event in the same project. Arbiter-enforced." }
+        "from_proposal": { "type": "string", "description": "The proposal_id of a committed model.patch_proposed event in the same project. Arbiter-enforced." },
+        "branch": { "type": "string", "minLength": 1, "default": "main", "description": "v1.2: the model branch this event belongs to. Absent means \"main\", so a ledger without the field means exactly what it meant under v1.1." }
       }
     },
     "ModelVersionCreated": {
       "type": "object", "additionalProperties": false,
       "required": ["version_id"],
-      "description": "Creates a model version and makes it the project's head. Without `parent` it is the genesis version, allowed only while the project has no head (DUPLICATE_GENESIS). With `parent` it must name a model version already committed in the same project (UNKNOWN_MODEL_VERSION), and the new version's model is a copy of the parent's (v1.1, P-7). version_id must not have been used in the project (DUPLICATE_VERSION_ID). All Arbiter-enforced. A project has one head; multiple heads for alternative designs are planned for v1.2.",
+      "description": "Creates a model version and makes it the head of its branch. Without `parent` it is the genesis version, allowed only while the project has no model version at all (DUPLICATE_GENESIS when its branch already has a head; v1.2: BRANCH_NEEDS_PARENT when another branch does). With `parent` it must name a model version already committed in the same project, on any branch (UNKNOWN_MODEL_VERSION), and the new version's model is a copy of the parent's (v1.1, P-7). version_id must not have been used in the project (DUPLICATE_VERSION_ID). All Arbiter-enforced. v1.2: a project has one head per branch; a branch begins with a model.version_created that names it and a committed parent.",
       "properties": {
         "version_id": { "type": "string" },
-        "parent": { "type": "string", "description": "A model version already committed in the same project (by model.version_created or model.patch_committed)." }
+        "parent": { "type": "string", "description": "A model version already committed in the same project (by model.version_created or model.patch_committed), on any branch." },
+        "branch": { "type": "string", "minLength": 1, "default": "main", "description": "v1.2: the model branch this event belongs to. Absent means \"main\", so a ledger without the field means exactly what it meant under v1.1." }
       }
     },
     "DecisionRecorded": {
@@ -227,7 +234,8 @@
       "properties": {
         "session_id": { "type": "string" },
         "from": { "$ref": "#/$defs/Phase" },
-        "to": { "$ref": "#/$defs/Phase" }
+        "to": { "$ref": "#/$defs/Phase" },
+        "round": { "type": "integer", "minimum": 0, "description": "v1.2: the session's round when it entered the phase (0 before the loop)." }
       }
     },
     "SessionCheckpoint": {
@@ -237,6 +245,7 @@
         "session_id": { "type": "string" },
         "phase": { "$ref": "#/$defs/Phase" },
         "best_version": { "type": "string" },
+        "package_ref": { "type": "string", "description": "v1.2: the content hash of the session package written so far, if any." },
         "open_risk_ids": { "type": "array", "items": { "type": "string" } },
         "spend": {
           "type": "object", "additionalProperties": false, "required": ["tokens"],
@@ -261,6 +270,59 @@
             "gpu_minutes": { "type": ["number", "null"] }
           }
         }
+      }
+    },
+    "SessionStatusChanged": {
+      "type": "object", "additionalProperties": false,
+      "description": "v1.2 (P-11): a session's status changed, or a human's decision at a gate was refused. With session.phase_changed, session.checkpoint, budget.updated and waiver.signed it makes a session's whole story replayable from the ledger: the session read model is a projection. Arbiter-enforced: an event whose decision is approve, approve_with_risks or reject must come from a human actor (DECISION_NOT_HUMAN).",
+      "required": ["session_id", "status"],
+      "properties": {
+        "session_id": { "type": "string" },
+        "status": { "type": "string", "minLength": 1, "description": "The status the session is in after this event: running, paused, awaiting_approval, approved, approved_with_risks, rejected, cancelled, failed, or an outcome the session ended in without a gate." },
+        "outcome": { "type": "string", "description": "How the design loop ended: completed, completed_with_risks, stopped_budget, stopped_time, cancelled, failed." },
+        "decision": { "enum": ["approve", "approve_with_risks", "reject", "extend"], "description": "The decision taken at a human gate that caused this change (or, with refused, that was asked for)." },
+        "reason": { "type": "string", "description": "Why: the human's reason for approve_with_risks, the cause of a failure, the convergence rule's stop reason, or why a decision was refused." },
+        "package_ref": { "type": "string", "description": "The content hash of the session package this status refers to." },
+        "refused": { "type": "boolean", "description": "true: the decision was asked for and NOT applied; status is the unchanged current status and reason says why." },
+        "gate_verdict": { "enum": ["ALLOWED", "BLOCKED"], "description": "The gate verdict of the package the session waits on or ended with." },
+        "preset": { "type": "string", "description": "On the session's first event: the preset it runs under." },
+        "limits": { "type": "object", "description": "The session's resolved limits: on its first event, and again when an extend decision raises them." },
+        "brief_source_id": { "type": "string", "description": "On the session's first event: the source the brief was ingested as." }
+      }
+    },
+    "FindingRaised": {
+      "type": "object", "additionalProperties": false,
+      "description": "v1.2 (P-12): a discovery finding: a question, a risk or a hypothesis a detector raises about the project's knowledge or model. A finding is never a fact: it is not a claim and nothing may cite it as evidence. Arbiter-enforced: every ref resolves to a committed claim, source, model version, decision, model element or entity of the project (UNKNOWN_REF); every evidence claim is committed (UNKNOWN_CLAIM); finding_id was never used (DUPLICATE_FINDING_ID); no OPEN finding has the same dedupe_key (DUPLICATE_FINDING).",
+      "required": ["finding_id", "kind", "severity", "summary", "refs", "suggested_action", "detector", "dedupe_key"],
+      "properties": {
+        "finding_id": { "type": "string", "pattern": "^fnd_[0-9A-Za-z]{10,26}$" },
+        "kind": { "enum": ["contradiction", "gap", "hidden_dependency", "open_assumption", "cross_domain_hypothesis", "stale_evidence"] },
+        "severity": { "enum": ["critical", "major", "minor"] },
+        "summary": { "type": "string", "minLength": 1 },
+        "refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 }, "description": "What the finding is about: ids of claims, entities, model elements, sources, decisions or model versions." },
+        "evidence_claims": { "type": "array", "items": { "type": "string" }, "description": "The committed claims the detector read to raise it." },
+        "suggested_action": {
+          "type": "object", "additionalProperties": false, "required": ["kind", "detail"],
+          "properties": {
+            "kind": { "enum": ["condition_analysis", "research_task", "experiment", "verify_assumption", "review", "revalidate"] },
+            "detail": { "type": "string" }
+          }
+        },
+        "detector": {
+          "type": "object", "additionalProperties": false, "required": ["id", "version"],
+          "properties": { "id": { "type": "string", "minLength": 1 }, "version": { "type": "integer", "minimum": 1 } }
+        },
+        "dedupe_key": { "type": "string", "minLength": 1, "description": "Stable across runs for the same finding: a detector that sees the same thing again raises nothing new." }
+      }
+    },
+    "FindingResolved": {
+      "type": "object", "additionalProperties": false,
+      "description": "v1.2 (P-12): closes an open finding (FINDING_NOT_OPEN otherwise, Arbiter-enforced).",
+      "required": ["finding_id", "resolution"],
+      "properties": {
+        "finding_id": { "type": "string" },
+        "resolution": { "enum": ["answered", "refuted", "accepted_risk", "obsolete", "converted_to_objection", "converted_to_experiment"] },
+        "ref": { "type": "string", "description": "What resolves it: a claim, an experiment, a waiver, an objection, a model version." }
       }
     },
     "Phase": {

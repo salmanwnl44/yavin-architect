@@ -19,7 +19,11 @@ STATE_TABLES = (
     "arb_model_heads",
     "arb_model_versions",
     "arb_objections",
+    "arb_refs",
+    "arb_findings",
 )
+
+MAIN = "main"  # the branch of an event that names none (contracts v1.2)
 
 
 class ArbiterState:
@@ -71,6 +75,11 @@ class ArbiterState:
             "VALUES (%s, %s, %s, %s, %s)",
             (self._pid, claim_id, claim["status"], claim.get("load_bearing", False), Jsonb(claim)),
         )
+        # the entities the claim names can be referred to, by `ent:<type>:<id>` or bare id
+        for end in (claim["subject"], claim["object"]):
+            if "id" in end:
+                self.add_ref(str(end["id"]), "entity")
+                self.add_ref(f"ent:{end['entity_type']}:{end['id']}", "entity")
 
     def set_claim_status(self, claim_id: str, status: str) -> None:
         self._cur.execute(
@@ -78,12 +87,24 @@ class ArbiterState:
             (status, self._pid, claim_id),
         )
 
-    # model head
-    def model_head(self) -> str | None:
+    # model heads: one per branch
+    def model_head(self, branch: str = MAIN) -> str | None:
         row = self._cur.execute(
-            "SELECT head_version FROM arb_model_heads WHERE project_id = %s", (self._pid,)
+            "SELECT head_version FROM arb_model_heads WHERE project_id = %s AND branch = %s",
+            (self._pid, branch),
         ).fetchone()
         return row["head_version"] if row else None
+
+    def has_model_versions(self) -> bool:
+        return self._exists("SELECT 1 FROM arb_model_versions WHERE project_id = %s LIMIT 1")
+
+    def version_branch(self, version_id: str) -> str | None:
+        """The branch a committed version was committed on, or None if there is none."""
+        row = self._cur.execute(
+            "SELECT branch FROM arb_model_versions WHERE project_id = %s AND version_id = %s",
+            (self._pid, version_id),
+        ).fetchone()
+        return row["branch"] if row else None
 
     def model(self, version_id: str) -> dict[str, Any] | None:
         """The materialized model of a committed version, or None if there is no such version."""
@@ -93,17 +114,75 @@ class ArbiterState:
         ).fetchone()
         return row["model"] if row else None
 
-    def add_model_version(self, version_id: str, model: dict[str, Any]) -> None:
-        """Record a committed model version with its model and make it the project's head."""
+    def add_model_version(self, version_id: str, model: dict[str, Any], branch: str = MAIN) -> None:
+        """Record a committed model version with its model and make it the head of its
+        branch."""
         self._cur.execute(
-            "INSERT INTO arb_model_versions (project_id, version_id, model) VALUES (%s, %s, %s) "
-            "ON CONFLICT (project_id, version_id) DO UPDATE SET model = EXCLUDED.model",
-            (self._pid, version_id, Jsonb(model)),
+            "INSERT INTO arb_model_versions (project_id, version_id, model, branch) "
+            "VALUES (%s, %s, %s, %s) ON CONFLICT (project_id, version_id) "
+            "DO UPDATE SET model = EXCLUDED.model, branch = EXCLUDED.branch",
+            (self._pid, version_id, Jsonb(model), branch),
         )
         self._cur.execute(
-            "INSERT INTO arb_model_heads (project_id, head_version) VALUES (%s, %s) "
-            "ON CONFLICT (project_id) DO UPDATE SET head_version = EXCLUDED.head_version",
-            (self._pid, version_id),
+            "INSERT INTO arb_model_heads (project_id, branch, head_version) VALUES (%s, %s, %s) "
+            "ON CONFLICT (project_id, branch) DO UPDATE SET head_version = EXCLUDED.head_version",
+            (self._pid, branch, version_id),
+        )
+        for elements in model.get("elements", {}).values():
+            for element in elements:
+                if "id" in element:
+                    self.add_ref(str(element["id"]), "element")
+
+    # what a finding's refs may name (contracts v1.2)
+    def add_ref(self, ref_id: str, kind: str) -> None:
+        self._cur.execute(
+            "INSERT INTO arb_refs (project_id, ref_id, kind) VALUES (%s, %s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (self._pid, ref_id, kind),
+        )
+
+    def ref_resolves(self, ref_id: str) -> bool:
+        """A committed claim, a source, a model version, or an entity, element or decision."""
+        return (
+            self.claim_status(ref_id) is not None
+            or self.source_exists(ref_id)
+            or self.model(ref_id) is not None
+            or self._exists(
+                "SELECT 1 FROM arb_refs WHERE project_id = %s AND ref_id = %s LIMIT 1", ref_id
+            )
+        )
+
+    # findings (contracts v1.2)
+    def finding_exists(self, finding_id: str) -> bool:
+        return self._exists(
+            "SELECT 1 FROM arb_findings WHERE project_id = %s AND finding_id = %s", finding_id
+        )
+
+    def finding_is_open(self, finding_id: str) -> bool:
+        return self._exists(
+            "SELECT 1 FROM arb_findings WHERE project_id = %s AND finding_id = %s AND open",
+            finding_id,
+        )
+
+    def open_finding_with(self, dedupe_key: str) -> str | None:
+        row = self._cur.execute(
+            "SELECT finding_id FROM arb_findings WHERE project_id = %s AND dedupe_key = %s "
+            "AND open",
+            (self._pid, dedupe_key),
+        ).fetchone()
+        return row["finding_id"] if row else None
+
+    def open_finding(self, finding_id: str, dedupe_key: str) -> None:
+        self._cur.execute(
+            "INSERT INTO arb_findings (project_id, finding_id, dedupe_key, open) "
+            "VALUES (%s, %s, %s, true)",
+            (self._pid, finding_id, dedupe_key),
+        )
+
+    def close_finding(self, finding_id: str) -> None:
+        self._cur.execute(
+            "UPDATE arb_findings SET open = false WHERE project_id = %s AND finding_id = %s",
+            (self._pid, finding_id),
         )
 
     # objections

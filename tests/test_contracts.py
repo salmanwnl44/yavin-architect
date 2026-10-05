@@ -46,7 +46,7 @@ def test_the_contract_scripts_exit_zero(script, verdict):
 
 def test_event_types_match_the_payload_dispatch():
     contracts = load_contracts()
-    assert len(contracts.event_types) == 19
+    assert len(contracts.event_types) == 22  # 19 in v1.1; v1.2 added three
     assert set(contracts._event_branch) == set(contracts.event_types)
 
 

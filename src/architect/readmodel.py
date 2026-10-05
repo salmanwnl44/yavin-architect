@@ -101,11 +101,12 @@ def model_version(pool: ConnectionPool, project_id: str, version_id: str) -> Row
     return _version(row)
 
 
-def _head(conn: Connection[Row], project_id: str) -> Row | None:
+def _head(conn: Connection[Row], project_id: str, branch: str = "main") -> Row | None:
+    """The head of a branch: its latest committed version. A project's head is main's."""
     return conn.execute(
         "SELECT version_id, parent_version, committed_at_seq, model FROM proj_model_versions "
-        "WHERE project_id = %s ORDER BY committed_at_seq DESC LIMIT 1",
-        (project_id,),
+        "WHERE project_id = %s AND branch = %s ORDER BY committed_at_seq DESC LIMIT 1",
+        (project_id, branch),
     ).fetchone()
 
 

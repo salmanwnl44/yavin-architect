@@ -17,7 +17,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from temporalio import activity
 from temporalio.exceptions import ApplicationError
@@ -214,6 +213,7 @@ class SessionActivities:
         *,
         actor: dict[str, Any] | None = None,
         task_id: str | None = None,
+        ts: str | None = None,
     ) -> Commit:
         candidate: dict[str, Any] = {
             "actor": actor or agent.ORCHESTRATOR,
@@ -224,6 +224,8 @@ class SessionActivities:
         }
         if task_id is not None:
             candidate["task_id"] = task_id
+        if ts is not None:
+            candidate["ts"] = ts
         return self._arbiter.submit(project_id, candidate)
 
     def _call(
@@ -260,18 +262,6 @@ class SessionActivities:
             raise _BudgetStop(str(refused)) from refused
         except (NoEligibleModel, ReplayMiss) as fatal:
             raise ApplicationError(str(fatal), type=SESSION_FAILURE, non_retryable=True) from fatal
-
-    def _update_row(self, project_id: str, session_id: str, **fields: Any) -> None:
-        if not fields:
-            return
-        columns = ", ".join(f"{k} = %s" for k in fields)
-        values = [Jsonb(v) if isinstance(v, (dict, list)) else v for v in fields.values()]
-        with self._pool.connection() as conn:
-            conn.execute(
-                f"UPDATE ses_sessions SET {columns}, updated_at = now() "
-                "WHERE project_id = %s AND session_id = %s",
-                (*values, project_id, session_id),
-            )
 
     def _commit_claim(
         self,
@@ -354,20 +344,22 @@ class SessionActivities:
             },
             f"session:{session_id}:budget",
         )
-        with self._pool.connection() as conn:
-            conn.execute(
-                "INSERT INTO ses_sessions (project_id, session_id, preset, limits, status, "
-                "phase, brief_source_id, started_at) VALUES (%s, %s, %s, %s, 'running', NULL, "
-                "%s, %s) ON CONFLICT (project_id, session_id) DO NOTHING",
-                (
-                    project_id,
-                    session_id,
-                    args["preset"],
-                    Jsonb(limits),
-                    brief.source_id,
-                    args["started_at"],
-                ),
-            )
+        # The session's first status event creates its row in the read model (contracts
+        # v1.2, P-11). Its ts is the session clock's origin, so the row's started_at is too.
+        self._event(
+            project_id,
+            session_id,
+            "session.status_changed",
+            {
+                "session_id": session_id,
+                "status": "running",
+                "preset": args["preset"],
+                "limits": limits,
+                "brief_source_id": brief.source_id,
+            },
+            f"session:{session_id}:status:start",
+            ts=args["started_at"],
+        )
         self._catch_up(project_id)
         return {
             "brief_source_id": brief.source_id,
@@ -378,7 +370,11 @@ class SessionActivities:
     # ------------------------------------------------------------------ phase_changed
     def _phase_changed(self, args: dict[str, Any]) -> dict[str, Any]:
         project_id, session_id = args["project_id"], args["session_id"]
-        payload: dict[str, Any] = {"session_id": session_id, "to": args["to"]}
+        payload: dict[str, Any] = {
+            "session_id": session_id,
+            "to": args["to"],
+            "round": int(args["round"]),
+        }
         if args.get("from"):
             payload["from"] = args["from"]
         self._event(
@@ -387,9 +383,6 @@ class SessionActivities:
             "session.phase_changed",
             payload,
             f"session:{session_id}:phase:{args['round']}:{args['to']}",
-        )
-        self._update_row(
-            project_id, session_id, phase=args["to"], round=args["round"], status="running"
         )
         self._catch_up(project_id)
         return {}
@@ -1046,19 +1039,14 @@ class SessionActivities:
         }
         if args.get("best_version"):
             payload["best_version"] = args["best_version"]
+        if args.get("package_key"):
+            payload["package_ref"] = args["package_key"]
         self._event(
             project_id,
             session_id,
             "session.checkpoint",
             payload,
             f"session:{session_id}:checkpoint:{args['key']}",
-        )
-        self._update_row(
-            project_id,
-            session_id,
-            best_version=args.get("best_version"),
-            open_risks=args.get("open_risk_ids", []),
-            spend=spend,
         )
         self._catch_up(project_id)
         return {"spend": spend}
@@ -1157,17 +1145,9 @@ class SessionActivities:
         }
         data = json.dumps(package, sort_keys=True, indent=1, default=str).encode("utf-8")
         key = self._store.put(data)
-        self._update_row(
-            project_id,
-            session_id,
-            package_key=key,
-            open_risks=[r["id"] for r in risks],
-            best_version=best,
-            outcome=args["outcome"],
-            spend=spend,
-        )
+        # the package reaches the read model through the ledger: the checkpoint that follows
+        # carries its key, and the status event that follows that its outcome and verdict
         verdict = gate["verdict"] if gate else None
-        self._update_row(project_id, session_id, gate_verdict=verdict)
         return {
             "package_key": key,
             "open_risks": risks,
@@ -1200,7 +1180,6 @@ class SessionActivities:
                 actor={"kind": "human", "id": signer},
             )
             waivers.append({"waiver_id": waiver_id, "target_ref": target})
-        self._update_row(project_id, session_id, waivers=waivers)
         self._catch_up(project_id)
         return {"waivers": waivers}
 
@@ -1237,29 +1216,58 @@ class SessionActivities:
                 {"version_id": head, "parent": best},
                 f"session:{session_id}:extend:{n}:from-best",
             )
-        self._update_row(project_id, session_id, limits=limits, status="running", outcome=None)
         self._catch_up(project_id)
         return {"head_version": head, "spend": self._spend(session_id)}
 
     # ------------------------------------------------------------------ record_status
     def _record_status(self, args: dict[str, Any]) -> dict[str, Any]:
-        fields: dict[str, Any] = {"status": args["status"]}
-        for key in (
-            "outcome",
-            "phase",
-            "round",
-            "best_version",
-            "package_key",
-            "failure",
-            "last_refusal",
-        ):
-            if key in args:
-                fields[key] = args[key]
-        if "open_risk_ids" in args:
-            fields["open_risks"] = args["open_risk_ids"]
-        fields["spend"] = self._spend(args["session_id"])
-        self._update_row(args["project_id"], args["session_id"], **fields)
-        return {"spend": fields["spend"]}
+        """A session's status changed, or decisions were refused: each is a
+        session.status_changed event (contracts v1.2, P-11), and the session's row follows
+        from them in the read model. A decision at a human gate is signed by the human who
+        took it, a refused one by the human who asked. Keys derive from the workflow's own
+        counters, so a retried activity records nothing twice."""
+        project_id, session_id = args["project_id"], args["session_id"]
+        for refusal in args.get("refusals", []):
+            self._event(
+                project_id,
+                session_id,
+                "session.status_changed",
+                {
+                    "session_id": session_id,
+                    "status": args["status"],
+                    "decision": refusal["decision"],
+                    "refused": True,
+                    "reason": refusal["why"],
+                },
+                f"session:{session_id}:refusal:{refusal['n']}",
+                actor={"kind": "human", "id": refusal.get("signer") or "owner"},
+            )
+        if args.get("emit", True):
+            payload: dict[str, Any] = {"session_id": session_id, "status": args["status"]}
+            for key, field in (
+                ("outcome", "outcome"),
+                ("reason", "reason"),
+                ("package_key", "package_ref"),
+                ("gate_verdict", "gate_verdict"),
+                ("limits", "limits"),
+            ):
+                if args.get(key) is not None:
+                    payload[field] = args[key]
+            decision = args.get("decision")
+            actor = None
+            if decision is not None:
+                payload["decision"] = decision["kind"]
+                actor = {"kind": "human", "id": decision.get("signer") or "owner"}
+            self._event(
+                project_id,
+                session_id,
+                "session.status_changed",
+                payload,
+                f"session:{session_id}:status:{args['n']}",
+                actor=actor,
+            )
+        self._catch_up(project_id)
+        return {"spend": self._spend(session_id)}
 
 
 def waiver_risk(waiver: dict[str, Any]) -> dict[str, Any]:

@@ -1,5 +1,40 @@
 # Contract changelog
 
+## v1.2 — frozen 2026-10-04
+
+A minor version, under the same rule as v1.1: optional fields and NEW event types only. Every
+document valid under v1.1 is valid under v1.2; the schema `$id`s keep `/contracts/v1/`;
+`fixture/fixture_ledger.jsonl` is byte-identical and `fixture/replay.py` prints the same
+output on it.
+
+- **P-12: discovery findings.** Two event types. `finding.raised` carries `finding_id`
+  (`fnd_…`), `kind` (contradiction, gap, hidden_dependency, open_assumption,
+  cross_domain_hypothesis, stale_evidence), `severity`, `summary`, `refs` (at least one),
+  `evidence_claims`, `suggested_action {kind, detail}`, `detector {id, version}` and
+  `dedupe_key`. `finding.resolved` carries `finding_id`, `resolution` (answered, refuted,
+  accepted_risk, obsolete, converted_to_objection, converted_to_experiment) and an optional
+  `ref`. A finding is never a fact. Arbiter-enforced: `UNKNOWN_REF`, `UNKNOWN_CLAIM`,
+  `DUPLICATE_FINDING_ID`, `DUPLICATE_FINDING` (an open finding with the same `dedupe_key`),
+  `FINDING_NOT_OPEN`.
+- **P-11: session status.** `session.status_changed` carries `session_id`, `status` and
+  optionally `outcome`, `decision` (approve, approve_with_risks, reject, extend), `reason`
+  and `package_ref`. So that the session read model is rebuildable from the ledger alone it
+  also carries, optionally, `refused` (a decision asked for and not applied),
+  `gate_verdict`, and on a session's first event `preset`, `limits` and `brief_source_id`
+  (`limits` again when an extend raises them). `session.checkpoint` gained an optional
+  `package_ref` and `session.phase_changed` an optional `round`. Arbiter-enforced: approve,
+  approve_with_risks and reject come from a human actor (`DECISION_NOT_HUMAN`).
+- **Model branches (deferred from P-4).** An optional `branch` (default `"main"`) on
+  `model.version_created`, `model.patch_proposed` and `model.patch_committed`. One head per
+  branch; a patch's `base_version` must be the head of its branch (`BASE_MOVED`,
+  `BASE_NOT_BRANCH_HEAD`); a new branch's first version names a committed parent
+  (`BRANCH_NEEDS_PARENT`). An absent `branch` is `"main"`, so every v1.1 ledger means what it
+  meant. `fixture/replay.py` folds per branch.
+
+`fixture/replay.py` accepts the new event types and holds them to these rules; its extra
+report lines (branches, session statuses, findings) appear only for a ledger that has them.
+`validate.py` gained smoke tests for the new events.
+
 ## v1.1 — frozen 2026-10-03
 
 A minor version: optional fields and documented rules only. Every document valid under v1.0

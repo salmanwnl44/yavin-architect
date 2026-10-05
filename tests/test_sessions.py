@@ -111,7 +111,15 @@ def test_s1_planted_flaws_are_caught_repaired_and_the_session_is_approved(pool, 
     assert types.index("model.patch_committed") < first_check
     assert types.count("model.patch_committed") == 2, "the draft and one repair"
     assert types.count("session.checkpoint") >= 6
-    assert types[-1] == "session.checkpoint" and types[-2] == "session.phase_changed"
+    # contracts v1.2 (P-11): every status change is an event too. The session's own story
+    # still ends with the package checkpoint; after it come the gate and the decision.
+    assert types[2] == "session.status_changed", "the session's first status: running"
+    assert types[-2:] == ["session.status_changed"] * 2
+    assert types[-3] == "session.checkpoint" and types[-4] == "session.phase_changed"
+    statuses = [
+        (p["status"], p.get("decision")) for t, p in payloads(pool) if t == "session.status_changed"
+    ]
+    assert statuses == [("running", None), ("awaiting_approval", None), ("approved", "approve")]
 
     # requirements traced to the brief, with the linter's verdicts
     requirements = {
@@ -572,12 +580,16 @@ def test_s7_a_steer_after_the_last_step_boundary_is_still_recorded(pool, tmp_pat
 def _content(pool, project_id: str) -> list[dict[str, Any]]:
     """Events without the stamps that differ by construction (event_id, ts, prev_hash). A
     checkpoint's spend is metering, not content: the replay gateway charges nothing (M4, G6),
-    so a replayed checkpoint reports the recorded run's total rather than the running sum."""
+    so a replayed checkpoint reports the recorded run's total rather than the running sum.
+    Since contracts v1.2 the ledger also names the session package by its content hash
+    (package_ref); the package holds that spend and its own timeline, so the hash differs
+    between the two runs for the same reason and is left out the same way."""
+    metering = ("spend", "package_ref")
     out = []
     for event in events_of(pool, project_id):
         content = {k: v for k, v in event.items() if k not in ("event_id", "ts", "prev_hash")}
-        if event["type"] == "session.checkpoint":
-            content["payload"] = {k: v for k, v in event["payload"].items() if k != "spend"}
+        if event["type"] in ("session.checkpoint", "session.status_changed"):
+            content["payload"] = {k: v for k, v in event["payload"].items() if k not in metering}
         out.append(content)
     return out
 
