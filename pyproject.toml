@@ -70,5 +70,6 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.ruff.lint.isort]
 known-first-party = [
     "architect", "builders", "conftest", "ingest_fixtures", "knowledge_fixtures", "replay_reference",
-    "session_fixtures", "test_m8_graph", "test_projections",
+    "session_fixtures", "test_contracts_v11", "test_m7_gate_seed", "test_m8_graph",
+    "test_projections",
 ]

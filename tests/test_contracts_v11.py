@@ -76,7 +76,7 @@ def test_the_schemas_still_say_v1():
     for name, schema in load_contracts().schemas.items():
         assert schema["$id"] == f"https://yavin.dev/contracts/v1/{name}"
     readme = (contracts_dir() / "README.md").read_text(encoding="utf-8")
-    assert "FROZEN v1.1" in readme
+    assert "FROZEN v1.2" in readme  # v1.1 until contracts v1.2 (module C3)
 
 
 # --- X2: backward compatibility

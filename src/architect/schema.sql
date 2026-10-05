@@ -67,10 +67,16 @@ CREATE TABLE IF NOT EXISTS arb_proposals (
     PRIMARY KEY (project_id, proposal_id)
 );
 
+-- One head per model branch (contracts v1.2); a ledger without branches has only 'main'.
 CREATE TABLE IF NOT EXISTS arb_model_heads (
-    project_id   text PRIMARY KEY REFERENCES projects (project_id),
-    head_version text NOT NULL
+    project_id   text NOT NULL REFERENCES projects (project_id),
+    branch       text NOT NULL DEFAULT 'main',
+    head_version text NOT NULL,
+    PRIMARY KEY (project_id, branch)
 );
+ALTER TABLE arb_model_heads ADD COLUMN IF NOT EXISTS branch text NOT NULL DEFAULT 'main';
+ALTER TABLE arb_model_heads DROP CONSTRAINT IF EXISTS arb_model_heads_pkey;
+ALTER TABLE arb_model_heads ADD PRIMARY KEY (project_id, branch);
 
 -- Every model version committed so far, by model.version_created or model.patch_committed,
 -- with its materialized System Model. The Arbiter applies each patch to the head's model
@@ -79,8 +85,30 @@ CREATE TABLE IF NOT EXISTS arb_model_versions (
     project_id text  NOT NULL REFERENCES projects (project_id),
     version_id text  NOT NULL,
     model      jsonb NOT NULL,
+    branch     text  NOT NULL DEFAULT 'main',
     PRIMARY KEY (project_id, version_id)
 );
+ALTER TABLE arb_model_versions ADD COLUMN IF NOT EXISTS branch text NOT NULL DEFAULT 'main';
+
+-- What a finding's refs may name besides claims, sources and model versions (contracts
+-- v1.2): the entities committed claims name, the elements of committed model versions, and
+-- recorded decisions.
+CREATE TABLE IF NOT EXISTS arb_refs (
+    project_id text NOT NULL REFERENCES projects (project_id),
+    ref_id     text NOT NULL,
+    kind       text NOT NULL CHECK (kind IN ('entity', 'element', 'decision')),
+    PRIMARY KEY (project_id, ref_id, kind)
+);
+
+-- Findings (contracts v1.2): ids are used once, and no two open findings share a dedupe key.
+CREATE TABLE IF NOT EXISTS arb_findings (
+    project_id text    NOT NULL REFERENCES projects (project_id),
+    finding_id text    NOT NULL,
+    dedupe_key text    NOT NULL,
+    open       boolean NOT NULL,
+    PRIMARY KEY (project_id, finding_id)
+);
+CREATE INDEX IF NOT EXISTS arb_findings_open ON arb_findings (project_id, dedupe_key) WHERE open;
 
 CREATE TABLE IF NOT EXISTS arb_objections (
     project_id   text    NOT NULL REFERENCES projects (project_id),
@@ -175,9 +203,33 @@ CREATE TABLE IF NOT EXISTS proj_model_versions (
     parent_version   text,
     committed_at_seq bigint NOT NULL,
     model            jsonb  NOT NULL,
+    branch           text   NOT NULL DEFAULT 'main',
     PRIMARY KEY (project_id, version_id),
     UNIQUE (project_id, committed_at_seq)
 );
+-- contracts v1.2: versions belong to a branch; "the head" of a project is main's latest.
+ALTER TABLE proj_model_versions ADD COLUMN IF NOT EXISTS branch text NOT NULL DEFAULT 'main';
+
+-- Discovery findings (contracts v1.2, P-12): questions, risks and hypotheses, never facts.
+CREATE TABLE IF NOT EXISTS proj_findings (
+    project_id       text    NOT NULL REFERENCES projects (project_id),
+    finding_id       text    NOT NULL,
+    kind             text    NOT NULL,
+    severity         text    NOT NULL,
+    summary          text    NOT NULL,
+    refs             jsonb   NOT NULL,
+    evidence_claims  jsonb   NOT NULL,
+    suggested_action jsonb   NOT NULL,
+    detector         jsonb   NOT NULL,
+    dedupe_key       text    NOT NULL,
+    open             boolean NOT NULL,
+    raised_seq       bigint  NOT NULL,
+    resolved_seq     bigint,
+    resolution       text,
+    resolution_ref   text,
+    PRIMARY KEY (project_id, finding_id)
+);
+CREATE INDEX IF NOT EXISTS proj_findings_open ON proj_findings (project_id, kind) WHERE open;
 
 -- The graph as an edge list. ord numbers the edges one event produces. version_id is set
 -- on the model edges (SATISFIES, DEPENDS_ON, MITIGATES), which are written once per version.
@@ -471,6 +523,10 @@ CREATE TABLE IF NOT EXISTS ing_metrics (
 -- tables hold what the frozen event types cannot (contracts-PROPOSALS P-11): the session's
 -- status and outcome, the human approve/reject decision, the package key, and the agent
 -- messages (which reference gw_calls rows, never duplicate them).
+-- Since contracts v1.2 (P-11) this is a PROJECTION: folded by the projector from
+-- session.status_changed, session.phase_changed, session.checkpoint and waiver.signed, and
+-- rebuilt exactly by `architect rebuild-projections`. started_at and updated_at are event
+-- timestamps, never the wall clock of the fold.
 CREATE TABLE IF NOT EXISTS ses_sessions (
     project_id      text        NOT NULL REFERENCES projects (project_id),
     session_id      text        NOT NULL,

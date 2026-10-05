@@ -72,7 +72,7 @@ def claim_label(claim: dict[str, Any]) -> str:
 EDGES_CTE = """
 head AS (
     SELECT version_id FROM proj_model_versions
-    WHERE project_id = %(pid)s ORDER BY committed_at_seq DESC LIMIT 1
+    WHERE project_id = %(pid)s AND branch = 'main' ORDER BY committed_at_seq DESC LIMIT 1
 ),
 raw AS (
     SELECT seq, ord, edge_type, src, dst, NULL::text AS claim_id

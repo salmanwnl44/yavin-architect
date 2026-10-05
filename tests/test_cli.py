@@ -122,7 +122,11 @@ def test_verify_reports_a_tampered_event(cli, ledger_file, dsn):
 def test_rebuild_state_reports_zero_diff_on_a_healthy_ledger(cli, ledger_file, fingerprint):
     cli("ingest", str(ledger_file), "--project", "sample")
     before = fingerprint()
-    assert all(before[table] for table in STATE_TABLES), "the sample should populate every table"
+    # arb_findings (contracts v1.2) is the one table the v1.1 sample ledger has nothing for;
+    # test_contracts_v12.py rebuilds a ledger with findings and branches
+    populated = [table for table in STATE_TABLES if table != "arb_findings"]
+    assert all(before[table] for table in populated), "the sample should populate every table"
+    assert before["arb_findings"] == []
 
     code, out, _ = cli("rebuild-state", "--project", "sample")
     assert code == 0

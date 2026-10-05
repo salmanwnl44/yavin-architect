@@ -52,7 +52,11 @@ PROJ_TABLES = (
     "proj_graph_edges",
     "proj_entity_merges",
     "proj_entity_alias",
+    "proj_findings",
+    "ses_sessions",
 )
+
+MAIN = "main"  # the branch of an event that names none (contracts v1.2)
 
 # §7 refutation propagation: a claim in one of these statuses compromises what derives from it.
 COMPROMISING_STATUSES = ("refuted", "retracted")
@@ -394,7 +398,7 @@ class _Fold:
             model = empty_model(self.pid, version_id)
         else:
             model = child_of(self._model(parent), version_id)
-        self._store_version(version_id, parent, model)
+        self._store_version(version_id, parent, model, self.payload.get("branch", MAIN))
 
     def model_patch_committed(self) -> None:
         version_id, base = self.payload["version_id"], self.payload["base_version"]
@@ -402,7 +406,7 @@ class _Fold:
             model = apply_patch(self._model(base), self.payload["patch"], version_id)
         except PatchError as error:
             raise ProjectionError(f"{self._where()}: {error}") from error
-        self._store_version(version_id, base, model)
+        self._store_version(version_id, base, model, self.payload.get("branch", MAIN))
 
     def _model(self, version_id: str) -> Model:
         row = self.cur.execute(
@@ -413,7 +417,9 @@ class _Fold:
             raise ProjectionError(f"{self._where()}: model version {version_id} is not projected")
         return row["model"]
 
-    def _store_version(self, version_id: str, parent: str | None, model: Model) -> None:
+    def _store_version(
+        self, version_id: str, parent: str | None, model: Model, branch: str = MAIN
+    ) -> None:
         error = first_error(load_contracts().model, model)
         if error is not None:
             raise ProjectionError(
@@ -428,13 +434,14 @@ class _Fold:
             raise ProjectionError(f"{self._where()}: model version {version_id} already exists")
         self.cur.execute(
             "INSERT INTO proj_model_versions (project_id, version_id, parent_version, "
-            "committed_at_seq, model) VALUES (%s, %s, %s, %s, %s)",
-            (self.pid, version_id, parent, self.seq, Jsonb(model)),
+            "committed_at_seq, model, branch) VALUES (%s, %s, %s, %s, %s, %s)",
+            (self.pid, version_id, parent, self.seq, Jsonb(model), branch),
         )
         for link_type, (edge_type, src, dst) in MODEL_LINK_EDGES.items():
             for link in model["links"].get(link_type, []):
                 self.edge(edge_type, link[src], link[dst], version_id)
-        self._model_graph(model)
+        if branch == MAIN:  # the project's head is main's head; other branches are alternatives
+            self._model_graph(model)
 
     def _where(self) -> str:
         return f"seq {self.seq} ({self.event['type']})"
@@ -489,6 +496,40 @@ class _Fold:
             "VALUES (%s, %s, %s, %s, %s, %s)",
             (self.pid, self.seq, p["waiver_id"], p["target_ref"], p["risk"], p["signer"]),
         )
+        session_id = self.event.get("session_id")
+        if session_id is not None:  # signed at a session's gate: the session's row lists it
+            signed = [{"waiver_id": p["waiver_id"], "target_ref": p["target_ref"]}]
+            self._session(session_id, "waivers = waivers || %s::jsonb", Jsonb(signed))
+
+    # findings (contracts v1.2, P-12)
+    def finding_raised(self) -> None:
+        p = self.payload
+        self.cur.execute(
+            "INSERT INTO proj_findings (project_id, finding_id, kind, severity, summary, refs, "
+            "evidence_claims, suggested_action, detector, dedupe_key, open, raised_seq) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, %s)",
+            (
+                self.pid,
+                p["finding_id"],
+                p["kind"],
+                p["severity"],
+                p["summary"],
+                Jsonb(p["refs"]),
+                Jsonb(p.get("evidence_claims", [])),
+                Jsonb(p["suggested_action"]),
+                Jsonb(p["detector"]),
+                p["dedupe_key"],
+                self.seq,
+            ),
+        )
+
+    def finding_resolved(self) -> None:
+        p = self.payload
+        self.cur.execute(
+            "UPDATE proj_findings SET open = false, resolved_seq = %s, resolution = %s, "
+            "resolution_ref = %s WHERE project_id = %s AND finding_id = %s",
+            (self.seq, p["resolution"], p.get("ref"), self.pid, p["finding_id"]),
+        )
 
     def experiment_recorded(self) -> None:
         p = self.payload
@@ -512,8 +553,8 @@ class _Fold:
         else:
             head = self.cur.execute(
                 "SELECT version_id FROM proj_model_versions WHERE project_id = %s "
-                "ORDER BY committed_at_seq DESC LIMIT 1",
-                (self.pid,),
+                "AND branch = %s ORDER BY committed_at_seq DESC LIMIT 1",
+                (self.pid, MAIN),
             ).fetchone()
         self.cur.execute(
             "INSERT INTO proj_checks (project_id, seq, result_id, check_id, status, "
@@ -540,15 +581,79 @@ class _Fold:
             (self.pid, self.seq, Jsonb(p.get("scope", {})), Jsonb(p["limits"])),
         )
 
-    # session timeline
+    # sessions: the timeline, and the session's row (a projection since contracts v1.2)
+    def _session(self, session_id: str, assignments: str, *values: Any) -> None:
+        """Update the session's row and stamp it with this event's ts. A session that has no
+        row (its ledger predates session.status_changed) is left without one."""
+        self.cur.execute(
+            f"UPDATE ses_sessions SET {assignments}, updated_at = %s::timestamptz "
+            "WHERE project_id = %s AND session_id = %s",
+            (*values, self.event["ts"], self.pid, session_id),
+        )
+
     def session_phase_changed(self) -> None:
         p = self.payload
         self._timeline(p["session_id"], "phase_changed", p.get("from"), p["to"], None)
+        self._session(
+            p["session_id"], "phase = %s, round = coalesce(%s, round)", p["to"], p.get("round")
+        )
 
     def session_checkpoint(self) -> None:
         p = self.payload
         detail = {k: v for k, v in p.items() if k not in ("session_id", "phase")}
         self._timeline(p["session_id"], "checkpoint", None, p["phase"], detail)
+        self._session(
+            p["session_id"],
+            "best_version = %s, open_risks = %s, spend = %s, "
+            "package_key = coalesce(%s, package_key)",
+            p.get("best_version"),
+            Jsonb(p["open_risk_ids"]),
+            Jsonb({"tokens": p["spend"]["tokens"], "usd": p["spend"].get("usd", 0)}),
+            p.get("package_ref"),
+        )
+
+    def session_status_changed(self) -> None:
+        """Every status change of a session and every decision at its gates (P-11). The first
+        event of a session creates its row; a refused decision only records the refusal."""
+        p = self.payload
+        session_id = p["session_id"]
+        self.cur.execute(
+            "INSERT INTO ses_sessions (project_id, session_id, preset, limits, status, phase, "
+            "brief_source_id, started_at, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, NULL, %s, %s, %s::timestamptz) "
+            "ON CONFLICT (project_id, session_id) DO NOTHING",
+            (
+                self.pid,
+                session_id,
+                p.get("preset", ""),
+                Jsonb(p.get("limits", {})),
+                p["status"],
+                p.get("brief_source_id"),
+                self.event["ts"],
+                self.event["ts"],
+            ),
+        )
+        if p.get("refused"):
+            refusal = {"decision": p.get("decision"), "why": p.get("reason")}
+            self._session(session_id, "last_refusal = %s", Jsonb(refusal))
+            return
+        sets, values = ["status = %s"], [p["status"]]
+        if "outcome" in p:
+            sets.append("outcome = %s")
+            values.append(p["outcome"])
+        elif p.get("decision") == "extend":
+            sets.append("outcome = NULL")  # the loop runs again: it has not ended
+        if p["status"] == "failed":
+            sets.append("failure = %s")
+            values.append(p.get("reason"))
+        for column, key in (("package_key", "package_ref"), ("gate_verdict", "gate_verdict")):
+            if key in p:
+                sets.append(f"{column} = %s")
+                values.append(p[key])
+        if "limits" in p:
+            sets.append("limits = %s")
+            values.append(Jsonb(p["limits"]))
+        self._session(session_id, ", ".join(sets), *values)
 
     def _timeline(
         self,
@@ -593,6 +698,9 @@ HANDLERS = {
     "budget.updated": _Fold.budget_updated,
     "entity.merged": _Fold.entity_merged,
     "entity.merge_reverted": _Fold.entity_merge_reverted,
+    "session.status_changed": _Fold.session_status_changed,
+    "finding.raised": _Fold.finding_raised,
+    "finding.resolved": _Fold.finding_resolved,
 }
 
 # Committed events with no read model yet. Listed so a new event type is a decision, not

@@ -82,7 +82,8 @@ def head(pool: ConnectionPool, project_id: str) -> dict[str, Any]:
             "SELECT max(seq) AS last_seq FROM events WHERE project_id = %s", (project_id,)
         ).fetchone()
         model = conn.execute(
-            "SELECT head_version FROM arb_model_heads WHERE project_id = %s", (project_id,)
+            "SELECT head_version FROM arb_model_heads WHERE project_id = %s AND branch = 'main'",
+            (project_id,),
         ).fetchone()
         objections = conn.execute(
             "SELECT count(*) AS n FROM arb_objections WHERE project_id = %s AND open",
