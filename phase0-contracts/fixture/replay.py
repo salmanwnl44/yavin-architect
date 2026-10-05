@@ -8,6 +8,9 @@ mechanical); replay invariants hold (dense sequence, promotion rules, patch
 chains, objection lifecycle); and the folded projections are themselves valid —
 the final System Model version validates against system_model.schema.json.
 
+v1.2: model versions fold per branch (an absent `branch` is "main", and the report is about
+main's head); findings and session status events are accepted and held to their rules.
+
 Then it runs four real L0 checks (C-001, C-002, C-008, C-009) against the final
 state and prints the gate verdict. Usage:
 
@@ -94,7 +97,13 @@ resolved_objections = set()
 model = None           # the head's folded model
 head = None            # current model version id
 models = {}            # version_id -> that version's folded model (v1.1, P-7)
+heads = {}             # branch -> its head version id (v1.2; absent branch = "main")
 versions = []
+open_findings = {}     # finding_id -> dedupe_key (v1.2, P-12)
+finding_ids, resolved_findings = set(), set()
+elements_seen = set()  # every element id of every committed model version
+session_status = {}    # session_id -> status (v1.2, P-11)
+HUMAN_DECISIONS = ("approve", "approve_with_risks", "reject")
 decisions, waivers, checkpoints, check_events = [], [], [], []
 event_type_by_id = {}
 edges = {"EVIDENCES": 0, "SATISFIES": 0, "DEPENDS_ON": 0, "MITIGATES": 0, "DECISION_EVIDENCE": 0}
@@ -167,17 +176,22 @@ for i, ev in enumerate(events):
             model = {"elements": {}, "links": {}}
         head = p["version_id"]
         models[head] = model
+        heads[p.get("branch", "main")] = head      # v1.2: the head of ITS branch
         versions.append(head)
 
     elif etype == "model.patch_proposed":
         deep_validate(V_PATCH, p["patch"], f"{where} patch")
         require(p["patch"]["base_version"] == p["base_version"], f"{where}: patch/base mismatch")
-        require(p["base_version"] == head, f"{where}: base {p['base_version']} != head {head}")
+        branch_head = heads.get(p.get("branch", "main"))
+        require(p["base_version"] == branch_head,
+                f"{where}: base {p['base_version']} != head {branch_head}")
         patch_proposals.add(p["proposal_id"])
 
     elif etype == "model.patch_committed":
         deep_validate(V_PATCH, p["patch"], f"{where} patch")
-        require(p["base_version"] == head, f"{where}: base {p['base_version']} != head {head} (chain broken)")
+        branch_head = heads.get(p.get("branch", "main"))
+        require(p["base_version"] == branch_head,
+                f"{where}: base {p['base_version']} != head {branch_head} (chain broken)")
         if "from_proposal" in p:
             require(p["from_proposal"] in patch_proposals, f"{where}: unknown proposal {p['from_proposal']}")
         # v1.1 (P-7): the patch applies to its base version's model and yields a new version.
@@ -185,6 +199,7 @@ for i, ev in enumerate(events):
         apply_patch(p["patch"], where)
         head = p["version_id"]
         models[head] = model
+        heads[p.get("branch", "main")] = head      # v1.2: the head of ITS branch
         versions.append(head)
 
     elif etype == "objection.raised":
@@ -218,6 +233,45 @@ for i, ev in enumerate(events):
 
     elif etype == "session.checkpoint":
         checkpoints.append(p)
+
+    elif etype == "session.status_changed":       # v1.2 (P-11)
+        if p.get("decision") in HUMAN_DECISIONS:
+            require(ev["actor"]["kind"] == "human",
+                    f"{where}: decision {p['decision']} by a non-human actor")
+        if not p.get("refused"):
+            session_status[p["session_id"]] = p["status"]
+
+    elif etype == "finding.raised":               # v1.2 (P-12): a finding is never a fact
+        entity_refs = set()
+        for c in claims.values():
+            for end in (c["subject"], c["object"]):
+                if "id" in end:
+                    entity_refs.add(end["id"])
+                    entity_refs.add(f"ent:{end['entity_type']}:{end['id']}")
+        known = set(claims) | sources | set(models) | set(decisions) | elements_seen | entity_refs
+        for ref in p["refs"]:
+            require(ref in known, f"{where}: ref {ref} does not resolve")
+        for cid in p.get("evidence_claims", []):
+            require(cid in claims, f"{where}: evidence claim {cid} not committed")
+        require(p["finding_id"] not in finding_ids, f"{where}: duplicate finding_id")
+        require(p["dedupe_key"] not in open_findings.values(),
+                f"{where}: an open finding already has dedupe_key {p['dedupe_key']}")
+        finding_ids.add(p["finding_id"])
+        open_findings[p["finding_id"]] = p["dedupe_key"]
+
+    elif etype == "finding.resolved":
+        require(p["finding_id"] in open_findings, f"{where}: resolving unknown/closed finding")
+        open_findings.pop(p["finding_id"], None)
+        resolved_findings.add(p["finding_id"])
+
+    if etype in ("model.version_created", "model.patch_committed"):
+        for rows in model["elements"].values():   # what a finding's refs may name
+            elements_seen.update(el["id"] for el in rows if "id" in el)
+
+# v1.2: the report below is about the main branch; other branches are listed after it.
+if "main" in heads:
+    head = heads["main"]
+    model = models[head]
 
 edges["SATISFIES"] = len(model["links"].get("satisfies", []))
 edges["DEPENDS_ON"] = len(model["links"].get("depends_on", []))
@@ -282,6 +336,13 @@ print(f"objections:         raised={len(resolved_objections) + len(open_objectio
       f" resolved={len(resolved_objections)} open={len(open_objections)}")
 print(f"decisions (ADR):    {len(decisions)}   waivers: {len(waivers)}   checkpoints: {len(checkpoints)}")
 print(f"recorded checks:    {check_events}")
+if len(heads) > 1:                                # v1.2 lines: only when a ledger has them
+    print(f"model branches:     {dict(sorted(heads.items()))}")
+if session_status:
+    print(f"session statuses:   {dict(sorted(session_status.items()))}")
+if finding_ids:
+    print(f"findings:           raised={len(finding_ids)} resolved={len(resolved_findings)}"
+          f" open={len(open_findings)}")
 for cid, (st, detail) in sorted(l0.items()):
     print(f"L0 {cid} on final state: {st.upper()}  {detail}")
 print(f"gate IMPLEMENTATION_READY: {'ALLOWED' if gate_ok else 'BLOCKED'}"

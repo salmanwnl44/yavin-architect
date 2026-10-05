@@ -92,6 +92,62 @@ evt_bad_ts = dict(evt_good)
 evt_bad_ts["ts"] = "2026-10-02 06:41"
 smoke("event: ts that is not RFC 3339 rejected", "phase0-contracts/ledger_events.schema.json", evt_bad_ts, False)
 
+# 2d'. v1.2 events: a finding, its resolution, a session status change, a branch
+evt_finding = dict(evt_good)
+evt_finding.update({
+    "event_id": "evt_01HXAMPLE0MM",
+    "actor": {"kind": "system", "id": "discovery", "role": "discovery"},
+    "type": "finding.raised",
+    "payload": {
+        "finding_id": "fnd_01HXAMPLE0NN",
+        "kind": "contradiction",
+        "severity": "minor",
+        "summary": "Two claims give different p50 latency reductions for speculative decoding.",
+        "refs": ["clm_01HXAMPLE0AA", "clm_01HXAMPLE0PP"],
+        "evidence_claims": ["clm_01HXAMPLE0AA", "clm_01HXAMPLE0PP"],
+        "suggested_action": {"kind": "condition_analysis", "detail": "The conditions differ on: batch, gpu."},
+        "detector": {"id": "D1", "version": 1},
+        "dedupe_key": "d1:contradiction:clm_01HXAMPLE0AA,clm_01HXAMPLE0PP",
+    },
+    "idempotency_key": "finding-d1-0001",
+})
+smoke("event: finding.raised (v1.2)", "phase0-contracts/ledger_events.schema.json", evt_finding, True)
+evt_finding_bad = json.loads(json.dumps(evt_finding))
+evt_finding_bad["payload"]["refs"] = []
+smoke("event: finding without refs rejected", "phase0-contracts/ledger_events.schema.json", evt_finding_bad, False)
+evt_finding_fact = json.loads(json.dumps(evt_finding))
+evt_finding_fact["payload"]["kind"] = "fact"
+smoke("event: finding of an unknown kind rejected", "phase0-contracts/ledger_events.schema.json", evt_finding_fact, False)
+evt_resolved = dict(evt_good)
+evt_resolved.update({
+    "event_id": "evt_01HXAMPLE0QQ",
+    "type": "finding.resolved",
+    "payload": {"finding_id": "fnd_01HXAMPLE0NN", "resolution": "answered", "ref": "exp_01HXAMPLE0CC"},
+    "idempotency_key": "finding-d1-0001-resolved",
+})
+smoke("event: finding.resolved (v1.2)", "phase0-contracts/ledger_events.schema.json", evt_resolved, True)
+evt_status = dict(evt_good)
+evt_status.update({
+    "event_id": "evt_01HXAMPLE0RR",
+    "session_id": "ses_01HXAMPLE0GG",
+    "type": "session.status_changed",
+    "payload": {"session_id": "ses_01HXAMPLE0GG", "status": "approved_with_risks", "outcome": "completed_with_risks",
+                "decision": "approve_with_risks", "reason": "single node is fine in dev", "package_ref": "sha256:ab12"},
+    "idempotency_key": "session-status-0004",
+})
+smoke("event: session.status_changed (v1.2)", "phase0-contracts/ledger_events.schema.json", evt_status, True)
+evt_status_bad = json.loads(json.dumps(evt_status))
+evt_status_bad["payload"]["decision"] = "shrug"
+smoke("event: session decision outside the enum rejected", "phase0-contracts/ledger_events.schema.json", evt_status_bad, False)
+evt_branch = dict(evt_good)
+evt_branch.update({
+    "event_id": "evt_01HXAMPLE0SS",
+    "type": "model.version_created",
+    "payload": {"version_id": "mv_01HXAMPLE0TT", "parent": "mv_01HXAMPLE0JJ", "branch": "alt-queue"},
+    "idempotency_key": "branch-alt-queue",
+})
+smoke("event: model.version_created on a branch (v1.2)", "phase0-contracts/ledger_events.schema.json", evt_branch, True)
+
 # 2e. An agent Objection — falsifiable_test required
 obj_good = {
     "msg_id": "msg_01HXAMPLE0FF",

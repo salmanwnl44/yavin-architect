@@ -4,7 +4,8 @@ Friction found while building against `phase0-contracts/` (v0.1 draft). The owne
 five entries, and they were applied in the one sanctioned edit that froze the contracts as
 v1.0; `phase0-contracts/CHANGELOG.md` is the record on the contract side. New friction goes
 below as P-6 onwards and waits for the next contract version: the contracts are frozen again.
-v1.1 (module C2) applied P-7 to P-10; P-6 stays open.
+v1.1 (module C2) applied P-7 to P-10. v1.2 (module C3) applied P-11 and P-12 and the
+multi-head branches deferred from P-4. P-6 stays open.
 
 ## P-1: `validate.py` fails on Windows
 
@@ -148,7 +149,13 @@ v2.0.
 
 ## P-11: the ledger cannot say how a session ended or what the human decided
 
-**Status: open, for the next contract version (found in M6).**
+**Status: applied in v1.2.** `session.status_changed` carries the status, outcome, decision,
+reason and package ref; `session.checkpoint` gained `package_ref`. So that the session read
+model is rebuildable EXACTLY, v1.2 also added, all optional: `refused`, `gate_verdict`,
+`preset`, `limits` and `brief_source_id` on `session.status_changed`, and `round` on
+`session.phase_changed`. `status` is a string, not the closed enum proposed below, so a
+later module can add a status without a new contract version. `ses_sessions` is now a
+projection. What the proposal said, for the record:
 
 - **Problem.** The session event types in `ledger_events.schema.json` are
   `session.phase_changed` (a `Phase`), `session.checkpoint` (phase, best version, open risk
@@ -167,3 +174,19 @@ v2.0.
   status enum above, and allow `session.checkpoint` to carry an optional `package_ref`
   (content hash). Then `ses_sessions` becomes a projection like `proj_*`, and a session's
   whole story, including the human's decision, replays from the ledger alone.
+
+## P-12: discovery has nowhere to put what it finds
+
+**Status: applied in v1.2** (raised and decided with module M9, before its code).
+
+- **Problem.** The Discovery Engine (spec §10) raises contradictions, gaps, hidden
+  dependencies, open assumptions, hypotheses and stale evidence. None of them is a fact, so
+  none may be a claim, and an objection is about a model element and needs a falsifiable
+  test. The ledger had no event for a question or a risk about the knowledge itself.
+- **Decision.** Two event types. `finding.raised` `{finding_id, kind, severity, summary, refs,
+  evidence_claims?, suggested_action {kind, detail}, detector {id, version}, dedupe_key}` and
+  `finding.resolved` `{finding_id, resolution, ref?}`. A finding is never a fact. The Arbiter
+  refuses refs that do not resolve (`UNKNOWN_REF`), a reused id (`DUPLICATE_FINDING_ID`), a
+  second open finding with the same `dedupe_key` (`DUPLICATE_FINDING`) and the resolution of
+  a finding that is not open (`FINDING_NOT_OPEN`).
+
