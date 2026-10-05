@@ -1899,7 +1899,17 @@ is run-specific, like the spend it contains, and is left out of the comparison).
 | X4 | Dropping `ses_sessions` and rebuilding from the ledger reproduces it exactly; human-only decisions | green | `::test_x4_*` (2) |
 | X5 | Every Arbiter refusal of v1.2, nothing written; replay refuses what the Arbiter refuses | green | `::test_x5_*` (5), `::test_every_new_event_type_has_a_rule_and_a_projection` |
 
-C3_CI_PLACEHOLDER
+CI output (branch head `cf587ec`, push run 37273577075; the pull_request run 37273609901
+agreed):
+
+```
+test (age-pgvector)   ================ 392 passed, 5 deselected in 247.49s (0:04:07) =================
+test (plain)          ================ 388 passed, 9 deselected in 208.92s (0:03:28) =================
+fastembed-smoke       ====================== 1 passed, 396 deselected in 3.90s =======================
+```
+
+Nothing failed and nothing was skipped. Local full suite on Windows at the same code: 388
+passed, 9 deselected.
 
 ## Windows
 
